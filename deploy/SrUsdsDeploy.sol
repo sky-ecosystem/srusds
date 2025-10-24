@@ -22,45 +22,45 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 
 import "dss-interfaces/Interfaces.sol";
 
-import { StUsds } from "src/StUsds.sol";
-import { StUsdsRateSetter } from "src/StUsdsRateSetter.sol";
-import { StUsdsMom } from "src/StUsdsMom.sol";
-import { StUsdsInstance } from "./StUsdsInstance.sol";
+import { SrUsds } from "src/SrUsds.sol";
+import { SrUsdsHandler } from "src/SrUsdsHandler.sol";
+import { SrUsdsSettler } from "src/SrUsdsSettler.sol";
+import { SrUsdsMom } from "src/SrUsdsMom.sol";
+import { SrUsdsInstance } from "./SrUsdsInstance.sol";
 
 interface SPBEAMLike {
     function conv() external view returns (address);
 }
 
-library StUsdsDeploy {
+library SrUsdsDeploy {
     function deploy(
         address deployer,
-        address owner,
-        address clip
-    ) internal returns (StUsdsInstance memory instance) {
+        address owner
+    ) internal returns (SrUsdsInstance memory instance) {
         ChainlogAbstract chainlog = ChainlogAbstract(0xdA0Ab1e0017DEbCd72Be8599041a2aa3bA7e740F);
 
-        address _stUsdsImp = address(new StUsds(
-                                            chainlog.getAddress("USDS_JOIN"),
-                                            chainlog.getAddress("MCD_JUG"),
-                                            clip,
-                                            chainlog.getAddress("MCD_VOW")
+        address _srUsdsImp = address(new SrUsds(
+                                            chainlog.getAddress("SUSDS")
                                         )
                                     );
-        address _stUsds = address(new ERC1967Proxy(_stUsdsImp, abi.encodeCall(StUsds.initialize, ())));
-        ScriptTools.switchOwner(_stUsds, deployer, owner);
+        address _srUsds = address(new ERC1967Proxy(_srUsdsImp, abi.encodeCall(SrUsds.initialize, ())));
+        ScriptTools.switchOwner(_srUsds, deployer, owner);
 
-        address _rateSetter = address(new StUsdsRateSetter(
-            _stUsds,
-            SPBEAMLike(chainlog.getAddress("MCD_SPBEAM")).conv()
+        address _handler = address(new SrUsdsHandler(_srUsds, chainlog.getAddress("USDS_JOIN"), chainlog.getAddress("MCD_VOW")));
+        ScriptTools.switchOwner(_handler, deployer, owner);
+
+        address _settler = address(new SrUsdsSettler(
+            _handler
         ));
-        ScriptTools.switchOwner(_rateSetter, deployer, owner);
+        ScriptTools.switchOwner(_settler, deployer, owner);
 
-        StUsdsMom _mom = new StUsdsMom(_stUsds);
+        SrUsdsMom _mom = new SrUsdsMom(_handler);
         _mom.setOwner(owner);
 
-        instance.stUsds      = _stUsds;
-        instance.stUsdsImp   = _stUsdsImp;
-        instance.rateSetter  = _rateSetter;
-        instance.mom         = address(_mom);
+        instance.srUsds    = _srUsds;
+        instance.srUsdsImp = _srUsdsImp;
+        instance.handler   = _handler;
+        instance.settler   = _settler;
+        instance.mom       = address(_mom);
     }
 }

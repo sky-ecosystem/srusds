@@ -20,44 +20,45 @@ interface AuthorityLike {
     function canCall(address, address, bytes4) external view returns (bool);
 }
 
-interface StUsdsLike {
-    function file(bytes32, uint256) external;
+interface HandlerLike {
+    function plan(int256) external;
 }
 
-interface RateSetterLike {
+interface SettlerLike {
     function diss(address) external;
     function file(bytes32, uint256) external;
 }
 
-contract StUsdsMom {
+contract SrUsdsMom {
     // --- Storage ---
     address public owner;
     address public authority;
 
     // --- Immutables ---
-    StUsdsLike immutable public stusds;
+    HandlerLike immutable public handler;
 
     // --- Events ---
     event SetOwner(address indexed owner);
     event SetAuthority(address indexed authority);
-    event DissRateSetterBud(address indexed rateSetter, address bud);
-    event HaltRateSetter(address indexed rateSetter);
-    event ZeroCap(address indexed rateSetter);
-    event ZeroLine(address indexed rateSetter);
+    event DissSettlerBud(address indexed settler, address bud);
+    event HaltSettler(address indexed settler);
+    event ZeroMaxMint(address indexed settler);
+    event ZeroMaxCut(address indexed settler);
+    event ZeroSettle();
 
     // --- Modifiers ---
     modifier onlyOwner() {
-        require(msg.sender == owner, "StUsdsMom/not-owner");
+        require(msg.sender == owner, "SrUsdsMom/not-owner");
         _;
     }
 
     modifier auth() {
-        require(isAuthorized(msg.sender, msg.sig), "StUsdsMom/not-authorized");
+        require(isAuthorized(msg.sender, msg.sig), "SrUsdsMom/not-authorized");
         _;
     }
 
-    constructor(address stusds_) {
-        stusds = StUsdsLike(stusds_);
+    constructor(address handler_) {
+        handler = HandlerLike(handler_);
 
         owner = msg.sender;
         emit SetOwner(msg.sender);
@@ -86,26 +87,28 @@ contract StUsdsMom {
     }
 
     // --- Emergency Actions ---
-    function dissRateSetterBud(address rateSetter, address bud) external auth {
-        RateSetterLike(rateSetter).diss(bud);
-        emit DissRateSetterBud(rateSetter, bud);
+    function dissSettlerBud(address settler, address bud) external auth {
+        SettlerLike(settler).diss(bud);
+        emit DissSettlerBud(settler, bud);
     }
 
-    function haltRateSetter(address rateSetter) external auth {
-        RateSetterLike(rateSetter).file("bad", 1);
-        emit HaltRateSetter(rateSetter);
+    function haltSettler(address settler) external auth {
+        SettlerLike(settler).file("bad", 1);
+        emit HaltSettler(settler);
     }
 
-    function zeroCap(address rateSetter) external auth {
-        stusds.file("cap", 0);
-        RateSetterLike(rateSetter).file("maxCap", 0);
-        emit ZeroCap(rateSetter);
+    function zeroMaxMint(address settler) external auth {
+        SettlerLike(settler).file("maxMint", 0);
+        emit ZeroMaxMint(settler);
     }
 
-    // Consider also calling stusds.drip() or using the line-mom to stop borrowing immediately
-    function zeroLine(address rateSetter) external auth {
-        stusds.file("line", 0);
-        RateSetterLike(rateSetter).file("maxLine", 0);
-        emit ZeroLine(rateSetter);
+    function zeroMaxCut(address settler) external auth {
+        SettlerLike(settler).file("maxCut", 0);
+        emit ZeroMaxCut(settler);
+    }
+
+    function zeroSettle() external auth {
+        handler.plan(0);
+        emit ZeroSettle();
     }
 }

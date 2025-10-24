@@ -16,9 +16,10 @@
 
 pragma solidity >=0.8.0;
 
-struct StUsdsInstance {
-    address stUsds;
-    address stUsdsImp;
-    address rateSetter;
+struct SrUsdsInstance {
+    address srUsds;
+    address srUsdsImp;
+    address handler;
+    address settler;
     address mom;
 }

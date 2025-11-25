@@ -52,7 +52,7 @@ contract SrUsds is UUPSUpgradeable {
     // --- Constants ---
 
     // ERC20
-    string  public constant name     = "Senior Capital USDS";
+    string  public constant name     = "Senior Risk USDS";
     string  public constant symbol   = "srUSDS";
     string  public constant version  = "1";
     uint8   public constant decimals = 18;
@@ -135,13 +135,6 @@ contract SrUsds is UUPSUpgradeable {
 
     // Math
 
-    function _divup(uint256 x, uint256 y) internal pure returns (uint256 z) {
-        // Note: _divup(0,0) will return 0 differing from natural solidity division
-        unchecked {
-            z = x != 0 ? ((x - 1) / y) + 1 : 0;
-        }
-    }
-
     function _toUint192(uint256 a) internal pure returns (uint192 b) {
         require(a <= type(uint192).max);
         b = uint192(a);
@@ -178,6 +171,7 @@ contract SrUsds is UUPSUpgradeable {
         newChi = chi = totalAssets_ > 0
                                ? _toUint192(oldChi * newTotalAssets / totalAssets_)
                                : 0;
+        rho = uint64(block.timestamp);
         emit Settle(assets, oldChi, newChi);
     }
 

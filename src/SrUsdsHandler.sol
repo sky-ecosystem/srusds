@@ -66,7 +66,7 @@ contract SrUsdsHandler {
     mapping (uint256 tau => mapping (address owner => uint256 amt)) public susdsIn;
     mapping (uint256 tau => mapping (address owner => uint256 amt)) public srusdsOut;
     mapping (uint256 tau => uint256 amt) public totSusdsIn;
-    mapping (uint256 tau => uint256 amt) public totSrusds;
+    mapping (uint256 tau => uint256 amt) public totSrusdsOut;
     mapping (uint256 tau =>  int256 amt) public settles;
     mapping (uint256 tau => uint256 chi) public chis;
 
@@ -170,7 +170,7 @@ contract SrUsdsHandler {
 
         // TODO: Review roundings
         uint256 totSusdsIn_   = totSusdsIn[tau_];
-        uint256 totSrusdsOut_ = totSrusds[tau_];  
+        uint256 totSrusdsOut_ = totSrusdsOut[tau_];
         uint256 totSusdsOut_  = totSrusdsOut_ * chi / RAY;
         if (totSusdsIn_ > totSusdsOut_) {
             srusds.deposit(totSusdsIn_ - totSusdsOut_, address(this));
@@ -178,7 +178,7 @@ contract SrUsdsHandler {
             srusds.redeem(totSrusdsOut_ - totSusdsIn_ * RAY / chi, address(this), address(this));
         }
 
-        totSusdsIn[tau_] = totSrusds[tau_] = 0; // Note: No need to update but still doing to show the value is not relevant anymore
+        totSusdsIn[tau_] = totSrusdsOut[tau_] = 0; // Note: No need to update but still doing to show the value is not relevant anymore
         chis[tau_] = chi;
         tau = tau_ + hop;
 
@@ -240,7 +240,7 @@ contract SrUsdsHandler {
         require(tau_ > 0, "SrUsdsHandler/missing-init");
         srusds.transferFrom(msg.sender, address(this), srusdsAmt);
         srusdsOut[tau_][msg.sender] += srusdsAmt;
-        totSrusds[tau_] += srusdsAmt;
+        totSrusdsOut[tau_] += srusdsAmt;
         emit InitiateRedeem(tau_, srusdsAmt);
     }
 
@@ -249,7 +249,7 @@ contract SrUsdsHandler {
     function undoRedeem(uint256 srusdsAmt) external {
         uint256 tau_ = tau;
         srusdsOut[tau_][msg.sender] -= srusdsAmt;
-        totSrusds[tau_] -= srusdsAmt;
+        totSrusdsOut[tau_] -= srusdsAmt;
         srusds.transfer(msg.sender, srusdsAmt);
         emit UndoRedeem(tau_, srusdsAmt);
     }

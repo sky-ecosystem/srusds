@@ -235,7 +235,7 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         vm.expectEmit(true, true, true, true);
         emit Rely(address(this));
         SrUsds token2 = SrUsds(address(new ERC1967Proxy(imp, abi.encodeCall(SrUsds.initialize, ()))));
-        assertEq(token2.name(), "Senior Capital USDS");
+        assertEq(token2.name(), "Senior Risk USDS");
         assertEq(token2.symbol(), "srUSDS");
         assertEq(token2.version(), "1");
         assertEq(token2.decimals(), 18);
@@ -251,7 +251,7 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
     }
 
     function testERC20() public {
-        checkBulkERC20(address(token), "SrUsds", "Senior Capital USDS", "srUSDS", "1", 18);
+        checkBulkERC20(address(token), "SrUsds", "Senior Risk USDS", "srUSDS", "1", 18);
     }
 
     function testPermit() public {

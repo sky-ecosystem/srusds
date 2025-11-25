@@ -78,8 +78,6 @@ contract SrUsds is UUPSUpgradeable {
     // ERC4626
     event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
     event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
-    // Referral
-    event Referral(uint16 indexed referral, address indexed owner, uint256 assets, uint256 shares);
 
     // --- Modifiers ---
 

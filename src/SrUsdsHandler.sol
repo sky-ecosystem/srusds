@@ -172,9 +172,9 @@ contract SrUsdsHandler {
         uint256 totSusdsIn_   = totSusdsIn[tau_];
         uint256 totSrusdsOut_ = totSrusdsOut[tau_];
         uint256 totSusdsOut_  = totSrusdsOut_ * chi / RAY;
-        if (totSusdsIn_ > totSusdsOut_) {
+        if (totSusdsIn_ >= totSusdsOut_) {
             srusds.deposit(totSusdsIn_ - totSusdsOut_, address(this));
-        } else   {
+        } else {
             srusds.redeem(totSrusdsOut_ - totSusdsIn_ * RAY / chi, address(this), address(this));
         }
 

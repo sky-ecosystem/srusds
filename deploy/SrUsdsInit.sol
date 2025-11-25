@@ -30,6 +30,7 @@ interface HandlerLike {
     function srusds() external view returns (address);
     function usdsJoin() external view returns (address);
     function vow() external view returns (address);
+    function file(bytes32, uint256) external;
     function rely(address) external;
 }
 
@@ -45,11 +46,12 @@ interface SrUsdsMomLike {
     function setAuthority(address) external;
 }
 
-struct SettlerConfig {
-    uint256   zzz;
-    uint256   maxMint;
-    uint256   maxCut;
-    address[] buds;
+struct SrUsdsConfig {
+    uint256   handlerHop;
+    uint256   settlerZzz;
+    uint256   settlerMaxMint;
+    uint256   settlerMaxCut;
+    address[] settlerBuds;
 }
 
 library SrUsdsInit {
@@ -60,7 +62,7 @@ library SrUsdsInit {
     function init(
         DssInstance    memory dss,
         SrUsdsInstance memory instance,
-        SettlerConfig  memory cfg
+        SrUsdsConfig   memory cfg
     ) internal {
         require(keccak256(abi.encodePacked(SrUsdsLike(instance.srUsds).version())) == keccak256(abi.encodePacked("1")), "SrUsdsInit/version-does-not-match");
         require(SrUsdsLike(instance.srUsds).getImplementation() == instance.srUsdsImp, "SrUsdsInit/imp-does-not-match");
@@ -80,15 +82,16 @@ library SrUsdsInit {
         SrUsdsLike(instance.srUsds).rely(instance.handler);
         SrUsdsLike(instance.srUsds).rely(instance.mom);
 
+        HandlerLike(instance.handler).file("hop", cfg.handlerHop);
         HandlerLike(instance.handler).rely(instance.settler);
 
         SettlerLike(instance.settler).rely(instance.mom);
-        SettlerLike(instance.settler).file("zzz", cfg.zzz);
-        SettlerLike(instance.settler).file("maxMint", cfg.maxMint);
-        SettlerLike(instance.settler).file("maxCut", cfg.maxCut);
+        SettlerLike(instance.settler).file("zzz", cfg.settlerZzz);
+        SettlerLike(instance.settler).file("maxMint", cfg.settlerMaxMint);
+        SettlerLike(instance.settler).file("maxCut", cfg.settlerMaxCut);
 
-        for (uint256 i; i < cfg.buds.length; i ++) {
-            SettlerLike(instance.settler).kiss(cfg.buds[i]);
+        for (uint256 i; i < cfg.settlerBuds.length; i ++) {
+            SettlerLike(instance.settler).kiss(cfg.settlerBuds[i]);
         }
 
         SrUsdsMomLike(instance.mom).setAuthority(dss.chainlog.getAddress("MCD_ADM"));

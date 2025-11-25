@@ -27,7 +27,7 @@ import { SrUsdsHandler } from "src/SrUsdsHandler.sol";
 
 import { SrUsdsInstance } from "deploy/SrUsdsInstance.sol";
 import { SrUsdsDeploy } from "deploy/SrUsdsDeploy.sol";
-import { SrUsdsInit, SettlerConfig } from "deploy/SrUsdsInit.sol";
+import { SrUsdsInit, SrUsdsConfig } from "deploy/SrUsdsInit.sol";
 
 interface SUsdsLike {
     function balanceOf(address) external view returns (uint256);
@@ -112,11 +112,12 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         SrUsdsInstance memory inst = SrUsdsDeploy.deploy(address(this), pauseProxy);
         token = SrUsds(inst.srUsds);
         handler = SrUsdsHandler(inst.handler);
-        SettlerConfig memory conf = SettlerConfig({
-            zzz: 10,
-            maxMint: 100_000e18,
-            maxCut: 100_000e18,
-            buds: new address[](0)
+        SrUsdsConfig memory conf = SrUsdsConfig({
+            handlerHop: 7 days,
+            settlerZzz: 10,
+            settlerMaxMint: 100_000e18,
+            settlerMaxCut: 100_000e18,
+            settlerBuds: new address[](0)
         });
         vm.startPrank(pauseProxy);
         SrUsdsInit.init(dss, inst, conf);

@@ -26,8 +26,12 @@ import { SUsdsMock } from "test/mocks/SUsdsMock.sol";
 import { SrUsds } from "src/SrUsds.sol";
 
 abstract contract ERC4626TestReduced is ERC4626Test {
+    function test_maxDeposit(Init memory) public override { vm.skip(true); }
+    function test_previewDeposit(Init memory, uint256) public override { vm.skip(true); }
     function test_maxMint(Init memory) public override { vm.skip(true); }
     function test_previewMint(Init memory, uint256) public override { vm.skip(true); }
+    function test_maxRedeem(Init memory) public override { vm.skip(true); }
+    function test_previewRedeem(Init memory, uint256) public override { vm.skip(true); }
     function test_mint(Init memory, uint256 , uint256) public override { vm.skip(true); }
     function test_maxWithdraw(Init memory) public override { vm.skip(true); }
     function test_previewWithdraw(Init memory, uint256) public override { vm.skip(true); }

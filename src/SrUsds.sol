@@ -276,7 +276,7 @@ contract SrUsds is UUPSUpgradeable {
         return convertToAssets(totalSupply);
     }
 
-    function convertToShares(uint256 assets) public view returns (uint256) {
+    function convertToShares(uint256 assets) external view returns (uint256) {
         uint256 chi_ = chi;
         return chi_ > 0 ? assets * RAY / chi_ : 0;
     }
@@ -285,26 +285,9 @@ contract SrUsds is UUPSUpgradeable {
         return shares * chi / RAY;
     }
 
-    function maxDeposit(address) external view returns (uint256) {
-        uint256 chi_ = chi;
-        return chi_ == 0 ? 0 : type(uint256).max;
-    }
-
-    function previewDeposit(uint256 assets) external view returns (uint256) {
-        return convertToShares(assets);
-    }
-
     function deposit(uint256 assets, address receiver) external auth returns (uint256 shares) {
         shares = assets * RAY / chi;
         _mint(assets, shares, receiver);
-    }
-
-    function maxRedeem(address owner) external view returns (uint256) {
-        return chi > 0 ? balanceOf[owner] : 0;
-    }
-
-    function previewRedeem(uint256 shares) external view returns (uint256) {
-        return convertToAssets(shares);
     }
 
     function redeem(uint256 shares, address receiver, address owner) external auth returns (uint256 assets) {

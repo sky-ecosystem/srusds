@@ -107,6 +107,7 @@ contract SrUsdsHandler {
     event Kill(uint256 cId);
     event Settle(uint256 cId);
     event NewCycle(uint256 cId, uint256 end);
+    event Update         (uint256 indexed cId, uint256 end);
     event Plan           (uint256 indexed cId,  int256 susdsAmt);
     event InitiateDeposit(uint256 indexed cId, uint256 susdsAmt);
     event UndoDeposit    (uint256 indexed cId, uint256 susdsAmt);
@@ -194,6 +195,17 @@ contract SrUsdsHandler {
         emit Stop(cId, level);
     }
 
+    function update(uint256 cId, uint256 end) external auth {
+        require(live == 1, "SrUsdsHandler/not-live");
+        require(cId == lCId, "SrUsdsHandler/not-current-cycle");
+        require(cycles[cId].end > block.timestamp, "SrUsdsHandler/already-ended");
+        require(end >= block.timestamp, "SrUsdsHandler/already-ended");
+
+        cycles[cId].end = end;
+
+        emit Update(cId, end);
+    }
+
     function plan(uint256 cId, int256 susdsAmt) external auth {
         require(cId == lCId, "SrUsdsHandler/not-current-cycle");
         require(cycles[cId].chi == 0, "SrUsdsHandler/already-settled");
@@ -279,7 +291,7 @@ contract SrUsdsHandler {
         uint256 cId = lCId;
         require (cId > 0, "SrUsdsHandler/not-init");
 
-        require(cycles[cId].chi == 0, "SrUsdsHandler/already-settled");
+        require(cycles[cId].chi == 0, "SrUsdsHandler/already-settled"); // TODO: evaluate if chi can be relied for this type of check
         require(block.timestamp >= cycles[cId].end, "SrUsdsHandler/current-cycle-not-finished");
 
         int256 susdsAmt = cycles[cId].settleAmt;

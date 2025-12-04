@@ -235,7 +235,6 @@ contract SrUsdsHandler {
             srusds.redeem(totSrusdsOut_ - totSusdsIn_ * RAY / chi, address(this), address(this));
         }
 
-        cycles[cId].totSusdsIn = cycles[cId].totSrusdsOut = 0; // Note: No need to update but still doing to show the value is not relevant anymore
         cycles[cId].chi = chi;
 
         emit Settle(cId);
@@ -324,6 +323,7 @@ contract SrUsdsHandler {
         uint256 susdsIn_ = cycles[cId].susdsIn[msg.sender];
         require(susdsIn_ > 0, "SrUsdsHandler/no-susdsIn-available");
         cycles[cId].susdsIn[msg.sender] = 0;
+        cycles[cId].totSusdsIn -= susdsIn_;
         srusdsAmt = susdsIn_ * RAY / cycles[cId].chi;
         srusds.transfer(to, srusdsAmt);
         emit FinishDeposit(cId, srusdsAmt);
@@ -336,6 +336,7 @@ contract SrUsdsHandler {
         uint256 srusdsAmt = cycles[cId].srusdsOut[msg.sender];
         require(srusdsAmt > 0, "SrUsdsHandler/no-srusdsOut-available");
         cycles[cId].srusdsOut[msg.sender] = 0;
+        cycles[cId].totSrusdsOut -= srusdsAmt;
         susdsAmt = srusdsAmt * cycles[cId].chi / RAY;
         susds.transfer(to, susdsAmt);
         emit FinishRedeem(cId, susdsAmt);
@@ -346,6 +347,7 @@ contract SrUsdsHandler {
         uint256 srusdsAmt = cycles[cId].srusdsOut[msg.sender];
         require(srusdsAmt > 0, "SrUsdsHandler/no-srusdsOut-available");
         cycles[cId].srusdsOut[msg.sender] = 0;
+        cycles[cId].totSrusdsOut -= srusdsAmt;
         uint256 susdsAmt = srusdsAmt * cycles[cId].chi / RAY;
         usdsAmt = susds.redeem(susdsAmt, to, address(this));
         emit FinishRedeem(cId, susdsAmt);

@@ -62,8 +62,8 @@ contract SrUsdsHandler {
 
     // --- Storage Variables ---
 
-    mapping (address => uint256) public wards;
-    mapping (uint256 cId => Cycle) public cycles;
+    mapping (address usr => uint256 allowed) public wards;
+    mapping (uint256 cId => Cycle cycle) public cycles;
 
     struct Cycle {
         uint256 end;
@@ -204,49 +204,6 @@ contract SrUsdsHandler {
 
     // --- User functions ---
 
-    function settle() external {
-        uint256 cId = lCId;
-        require (cId > 0, "SrUsdsHandler/not-init");
-
-        require(cycles[cId].chi == 0, "SrUsdsHandler/already-settled");
-        require(block.timestamp >= cycles[cId].end, "SrUsdsHandler/current-cycle-not-finished");
-
-        int256 susdsAmt = cycles[cId].settleAmt;
-        if (susdsAmt > 0) {
-            uint256 usdsAmt = susds.previewMint(uint256(susdsAmt));
-            vat.suck(address(this), address(this), usdsAmt * RAY);
-            usdsJoin.exit(address(this), usdsAmt);
-            susds.mint(uint256(susdsAmt), address(this));
-        }
-        uint256 chi = srusds.settle(susdsAmt);
-        // TODO: Find the best way to fix the possibility that susdAmt might be lower (due how srusds works)
-        if (susdsAmt < 0) {
-            uint256 usdsAmt = susds.redeem(uint256(-susdsAmt), address(this), address(this));
-            usdsJoin.join(vow, usdsAmt);
-        }
-
-        // TODO: Review roundings
-        uint256 totSusdsIn_   = cycles[cId].totSusdsIn;
-        uint256 totSrusdsOut_ = cycles[cId].totSrusdsOut;
-        uint256 totSusdsOut_  = totSrusdsOut_ * chi / RAY;
-        if (totSusdsIn_ >= totSusdsOut_) {
-            srusds.deposit(totSusdsIn_ - totSusdsOut_, address(this));
-        } else {
-            srusds.redeem(totSrusdsOut_ - totSusdsIn_ * RAY / chi, address(this), address(this));
-        }
-
-        cycles[cId].chi = chi;
-
-        emit Settle(cId);
-
-        if (live == 1) {
-            uint256 end = cycles[cId].end + hop;
-            lCId = cId += 1;
-            cycles[cId].end = end;
-            emit NewCycle(cId, end);
-        }
-    }
-
     // Initiate sUSDS/USDS -> srUSDS path
 
     function initiateDepositWithSUsds(uint256 cId, uint256 susdsAmt) external {
@@ -314,6 +271,51 @@ contract SrUsdsHandler {
         cycles[cId].totSrusdsOut -= srusdsAmt;
         srusds.transfer(msg.sender, srusdsAmt);
         emit UndoRedeem(cId, srusdsAmt);
+    }
+
+    // Settle cycle and free up to finish deposits and redeems
+
+    function settle() external {
+        uint256 cId = lCId;
+        require (cId > 0, "SrUsdsHandler/not-init");
+
+        require(cycles[cId].chi == 0, "SrUsdsHandler/already-settled");
+        require(block.timestamp >= cycles[cId].end, "SrUsdsHandler/current-cycle-not-finished");
+
+        int256 susdsAmt = cycles[cId].settleAmt;
+        if (susdsAmt > 0) {
+            uint256 usdsAmt = susds.previewMint(uint256(susdsAmt));
+            vat.suck(address(this), address(this), usdsAmt * RAY);
+            usdsJoin.exit(address(this), usdsAmt);
+            susds.mint(uint256(susdsAmt), address(this));
+        }
+        uint256 chi = srusds.settle(susdsAmt);
+        // TODO: Find the best way to fix the possibility that susdAmt might be lower (due how srusds works)
+        if (susdsAmt < 0) {
+            uint256 usdsAmt = susds.redeem(uint256(-susdsAmt), address(this), address(this));
+            usdsJoin.join(vow, usdsAmt);
+        }
+
+        // TODO: Review roundings
+        uint256 totSusdsIn_   = cycles[cId].totSusdsIn;
+        uint256 totSrusdsOut_ = cycles[cId].totSrusdsOut;
+        uint256 totSusdsOut_  = totSrusdsOut_ * chi / RAY;
+        if (totSusdsIn_ >= totSusdsOut_) {
+            srusds.deposit(totSusdsIn_ - totSusdsOut_, address(this));
+        } else {
+            srusds.redeem(totSrusdsOut_ - totSusdsIn_ * RAY / chi, address(this), address(this));
+        }
+
+        cycles[cId].chi = chi;
+
+        emit Settle(cId);
+
+        if (live == 1) {
+            uint256 end = cycles[cId].end + hop;
+            lCId = cId += 1;
+            cycles[cId].end = end;
+            emit NewCycle(cId, end);
+        }
     }
 
     // Finish sUSDS/USDS -> srUSDS path

@@ -196,10 +196,9 @@ contract SrUsdsHandler {
     }
 
     function update(uint256 cId, uint256 end) external auth {
-        require(live == 1, "SrUsdsHandler/not-live");
         require(cId == lCId, "SrUsdsHandler/not-current-cycle");
         require(cycles[cId].end > block.timestamp, "SrUsdsHandler/already-ended");
-        require(end >= block.timestamp, "SrUsdsHandler/already-ended");
+        require(end >= block.timestamp, "SrUsdsHandler/end-past");
 
         cycles[cId].end = end;
 
@@ -292,7 +291,8 @@ contract SrUsdsHandler {
         require (cId > 0, "SrUsdsHandler/not-init");
 
         require(cycles[cId].chi == 0, "SrUsdsHandler/already-settled"); // TODO: evaluate if chi can be relied for this type of check
-        require(block.timestamp >= cycles[cId].end, "SrUsdsHandler/current-cycle-not-finished");
+        uint256 cycleEnd = cycles[cId].end;
+        require(block.timestamp >= cycleEnd, "SrUsdsHandler/current-cycle-not-finished");
 
         int256 susdsAmt = cycles[cId].settleAmt;
         if (susdsAmt > 0) {
@@ -323,8 +323,8 @@ contract SrUsdsHandler {
         emit Settle(cId);
 
         if (live == 1) {
-            uint256 end = cycles[cId].end + hop;
             lCId = cId += 1;
+            uint256 end = cycleEnd + hop;
             cycles[cId].end = end;
             emit NewCycle(cId, end);
         }

@@ -64,6 +64,8 @@ contract SrUsdsHandler {
 
     mapping (address usr => uint256 allowed) public wards;
     mapping (uint256 cId => Cycle cycle) public cycles;
+    uint256 public cCId; // Current Cycle Id
+    uint256 public hop;
 
     struct Cycle {
         uint256 end;
@@ -74,10 +76,6 @@ contract SrUsdsHandler {
         int256  settleAmt;
         uint256 chi;
     }
-
-    uint256 public live; // 0 == stopped, 1 == live
-    uint256 public hop;
-    uint256 public lCId; // Last Cycle Id
 
     // --- Immutables ---
 
@@ -92,27 +90,19 @@ contract SrUsdsHandler {
 
     uint256 public constant RAY = 10**27;
 
-    // --- Enums ---
-
-    enum PauseLevel { FinishCycle, InmediateStop }
-
     // --- Events ---
 
-    // Admin
     event Rely(address indexed usr);
     event Deny(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
-    event Start();
-    event Stop(uint256 cId, PauseLevel level);
-    event Kill(uint256 cId);
-    event Settle(uint256 cId);
-    event NewCycle(uint256 cId, uint256 end);
+    event Init(uint256 end);
     event Update         (uint256 indexed cId, uint256 end);
     event Plan           (uint256 indexed cId,  int256 susdsAmt);
     event InitiateDeposit(uint256 indexed cId, uint256 susdsAmt);
     event UndoDeposit    (uint256 indexed cId, uint256 susdsAmt);
     event InitiateRedeem (uint256 indexed cId, uint256 srUsdsAmt);
     event UndoRedeem     (uint256 indexed cId, uint256 srUsdsAmt);
+    event Settle         (uint256 indexed cId);
     event FinishRedeem   (uint256 indexed cId, uint256 susdsAmt);
     event FinishDeposit  (uint256 indexed cId, uint256 srUsdsAmt);
 
@@ -167,37 +157,17 @@ contract SrUsdsHandler {
         emit File(what, data);
     }
 
-    function start(uint256 end) external auth {
-        require(live == 0, "SrUsdsHandler/already-live");
-        require(hop > 0, "SrUsdsHandler/hop-not-set");
+    function init(uint256 end) external auth {
+        require(cCId == 0);
+        require(end > block.timestamp, "SrUsdsHandler/end-too-soon");
 
-        live = 1;
-        emit Start();
+        cycles[++cCId].end = end;
 
-        uint256 cId = lCId;
-        if (cId == 0 || cycles[cId].chi > 0) {
-            require(end >= _max(block.timestamp, cycles[cId].end) + hop, "SrUsdsHandler/end-too-soon");
-
-            lCId = cId += 1;
-            cycles[cId].end = end;
-            emit NewCycle(cId, end);
-        }
-    }
-
-    function stop(uint256 cId, PauseLevel level) external auth {
-        require(live == 1, "SrUsdsHandler/not-live");
-        require(cId == lCId, "SrUsdsHandler/not-current-cycle");
-        live = 0;
-        if (level == PauseLevel.InmediateStop) {
-            cycles[cId].end = block.timestamp;
-        }
-
-        emit Stop(cId, level);
+        emit Init(end);
     }
 
     function update(uint256 cId, uint256 end) external auth {
-        require(cId == lCId, "SrUsdsHandler/not-current-cycle");
-        require(cycles[cId].end > block.timestamp, "SrUsdsHandler/already-ended");
+        require(cId == cCId, "SrUsdsHandler/not-current-cycle");
         require(end >= block.timestamp, "SrUsdsHandler/end-past");
 
         cycles[cId].end = end;
@@ -206,8 +176,7 @@ contract SrUsdsHandler {
     }
 
     function plan(uint256 cId, int256 susdsAmt) external auth {
-        require(cId == lCId, "SrUsdsHandler/not-current-cycle");
-        require(cycles[cId].chi == 0, "SrUsdsHandler/already-settled");
+        require(cId == cCId, "SrUsdsHandler/not-current-cycle");
         cycles[cId].settleAmt = susdsAmt;
 
         emit Plan(cId, susdsAmt);
@@ -218,8 +187,8 @@ contract SrUsdsHandler {
     // Initiate sUSDS/USDS -> srUSDS path
 
     function initiateDepositWithSUsds(uint256 cId, uint256 susdsAmt) external {
-        require(cId == lCId, "SrUsdsHandler/not-current-lCId");
-        require(block.timestamp < cycles[cId].end, "SrUsdsHandler/cycle-ended");
+        require(cId > 0, "SrUsdsHandler/not-init");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
         susds.transferFrom(msg.sender, address(this), susdsAmt);
         cycles[cId].susdsIn[msg.sender] += susdsAmt;
         cycles[cId].totSusdsIn += susdsAmt;
@@ -227,8 +196,8 @@ contract SrUsdsHandler {
     }
 
     function initiateDepositWithUsds(uint256 cId, uint256 usdsAmt) external {
-        require(cId == lCId, "SrUsdsHandler/not-current-lCId");
-        require(block.timestamp < cycles[cId].end, "SrUsdsHandler/cycle-ended");
+        require(cId > 0, "SrUsdsHandler/not-init");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
         usds.transferFrom(msg.sender, address(this), usdsAmt);
         uint256 susdsAmt = susds.deposit(usdsAmt, address(this));
         cycles[cId].susdsIn[msg.sender] += susdsAmt;
@@ -239,7 +208,7 @@ contract SrUsdsHandler {
     // Undo sUSDS/USDS -> srUSDS path
 
     function undoDepositGetSUsds(uint256 cId, uint256 susdsAmt) external {
-        require(cId == lCId, "SrUsdsHandler/not-current-lCId");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
         cycles[cId].susdsIn[msg.sender] -= susdsAmt;
         cycles[cId].totSusdsIn -= susdsAmt;
         susds.transfer(msg.sender, susdsAmt);
@@ -247,7 +216,7 @@ contract SrUsdsHandler {
     }
 
     function undoDepositGetUsds(uint256 cId, uint256 usdsAmt) external {
-        require(cId == lCId, "SrUsdsHandler/not-current-lCId");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
         uint256 susdsAmt = susds.withdraw(usdsAmt, msg.sender, address(this));
         cycles[cId].susdsIn[msg.sender] -= susdsAmt;
         cycles[cId].totSusdsIn -= susdsAmt;
@@ -255,7 +224,7 @@ contract SrUsdsHandler {
     }
 
     function undoDepositGetUsdsAll(uint256 cId) external returns (uint256 usdsAmt) {
-        require(cId == lCId, "SrUsdsHandler/not-current-lCId");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
         uint256 susdsAmt = cycles[cId].susdsIn[msg.sender];
         cycles[cId].susdsIn[msg.sender] = 0;
         cycles[cId].totSusdsIn -= susdsAmt;
@@ -266,8 +235,8 @@ contract SrUsdsHandler {
     // Initiate srUSDS -> sUSDS/USDS path
 
     function initiateRedeem(uint256 cId, uint256 srusdsAmt) external {
-        require(cId == lCId, "SrUsdsHandler/not-current-lCId");
-        require(live == 1, "SrUsdsHandler/not-live");
+        require(cId > 0, "SrUsdsHandler/not-init");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
         srusds.transferFrom(msg.sender, address(this), srusdsAmt);
         cycles[cId].srusdsOut[msg.sender] += srusdsAmt;
         cycles[cId].totSrusdsOut += srusdsAmt;
@@ -277,7 +246,7 @@ contract SrUsdsHandler {
     // Undo srUSDS -> sUSDS/USDS path
 
     function undoRedeem(uint256 cId, uint256 srusdsAmt) external {
-        require(cId == lCId, "SrUsdsHandler/not-current-lCId");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
         cycles[cId].srusdsOut[msg.sender] -= srusdsAmt;
         cycles[cId].totSrusdsOut -= srusdsAmt;
         srusds.transfer(msg.sender, srusdsAmt);
@@ -286,13 +255,11 @@ contract SrUsdsHandler {
 
     // Settle cycle and free up to finish deposits and redeems
 
-    function settle() external {
-        uint256 cId = lCId;
-        require (cId > 0, "SrUsdsHandler/not-init");
-
-        require(cycles[cId].chi == 0, "SrUsdsHandler/already-settled"); // TODO: evaluate if chi can be relied for this type of check
-        uint256 cycleEnd = cycles[cId].end;
-        require(block.timestamp >= cycleEnd, "SrUsdsHandler/current-cycle-not-finished");
+    function settle(uint256 cId) external {
+        require(cId > 0, "SrUsdsHandler/not-init");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+        uint256 end = cycles[cId].end;
+        require(block.timestamp >= end, "SrUsdsHandler/current-cycle-not-finished");
 
         int256 susdsAmt = cycles[cId].settleAmt;
         if (susdsAmt > 0) {
@@ -320,20 +287,15 @@ contract SrUsdsHandler {
 
         cycles[cId].chi = chi;
 
-        emit Settle(cId);
+        cycles[++cCId].end = end + hop;
 
-        if (live == 1) {
-            lCId = cId += 1;
-            uint256 end = cycleEnd + hop;
-            cycles[cId].end = end;
-            emit NewCycle(cId, end);
-        }
+        emit Settle(cId);
     }
 
     // Finish sUSDS/USDS -> srUSDS path
 
     function finishDeposit(uint256 cId, address to) external returns (uint256 srusdsAmt) {
-        require(cId < lCId, "SrUsdsHandler/current-lCId");
+        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
         uint256 susdsIn_ = cycles[cId].susdsIn[msg.sender];
         require(susdsIn_ > 0, "SrUsdsHandler/no-susdsIn-available");
         cycles[cId].susdsIn[msg.sender] = 0;
@@ -346,7 +308,7 @@ contract SrUsdsHandler {
     // Finish srUSDS -> sUSDS/USDS path
 
     function finishRedeemGetSUsds(uint256 cId, address to) external returns (uint256 susdsAmt) {
-        require(cId < lCId, "SrUsdsHandler/current-lCId");
+        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
         uint256 srusdsAmt = cycles[cId].srusdsOut[msg.sender];
         require(srusdsAmt > 0, "SrUsdsHandler/no-srusdsOut-available");
         cycles[cId].srusdsOut[msg.sender] = 0;
@@ -357,7 +319,7 @@ contract SrUsdsHandler {
     }
 
     function finishRedeemGetUsds(uint256 cId, address to) external returns (uint256 usdsAmt) {
-        require(cId < lCId, "SrUsdsHandler/current-lCId");
+        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
         uint256 srusdsAmt = cycles[cId].srusdsOut[msg.sender];
         require(srusdsAmt > 0, "SrUsdsHandler/no-srusdsOut-available");
         cycles[cId].srusdsOut[msg.sender] = 0;

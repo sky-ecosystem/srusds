@@ -99,12 +99,12 @@ contract SrUsdsHandler {
     event Update         (uint256 indexed cId, uint256 end);
     event Plan           (uint256 indexed cId,  int256 susdsAmt);
     event InitiateDeposit(uint256 indexed cId, uint256 susdsAmt);
-    event UndoDeposit    (uint256 indexed cId, uint256 susdsAmt);
+    event UndoDeposit    (uint256 indexed cId, uint256 susdsAmt,  address to);
     event InitiateRedeem (uint256 indexed cId, uint256 srUsdsAmt);
-    event UndoRedeem     (uint256 indexed cId, uint256 srUsdsAmt);
+    event UndoRedeem     (uint256 indexed cId, uint256 srUsdsAmt, address to);
     event Settle         (uint256 indexed cId);
-    event FinishRedeem   (uint256 indexed cId, uint256 susdsAmt);
-    event FinishDeposit  (uint256 indexed cId, uint256 srUsdsAmt);
+    event FinishRedeem   (uint256 indexed cId, uint256 susdsAmt,  address to);
+    event FinishDeposit  (uint256 indexed cId, uint256 srUsdsAmt, address to);
 
     // --- Modifiers ---
 
@@ -216,35 +216,35 @@ contract SrUsdsHandler {
 
     // Undo sUSDS/USDS -> srUSDS path
 
-    function undoDepositGetSUsds(uint256 cId, uint256 susdsAmt) external {
+    function undoDepositGetSUsds(uint256 cId, uint256 susdsAmt, address to) external {
         require(cId == cCId, "SrUsdsHandler/not-current-cId");
 
         cycles[cId].susdsIn[msg.sender] -= susdsAmt;
         cycles[cId].totSusdsIn -= susdsAmt;
-        susds.transfer(msg.sender, susdsAmt);
+        susds.transfer(to, susdsAmt);
 
-        emit UndoDeposit(cId, susdsAmt);
+        emit UndoDeposit(cId, susdsAmt, to);
     }
 
-    function undoDepositGetUsds(uint256 cId, uint256 usdsAmt) external {
+    function undoDepositGetUsds(uint256 cId, uint256 usdsAmt, address to) external {
         require(cId == cCId, "SrUsdsHandler/not-current-cId");
 
-        uint256 susdsAmt = susds.withdraw(usdsAmt, msg.sender, address(this));
+        uint256 susdsAmt = susds.withdraw(usdsAmt, to, address(this));
         cycles[cId].susdsIn[msg.sender] -= susdsAmt;
         cycles[cId].totSusdsIn -= susdsAmt;
 
-        emit UndoDeposit(cId, susdsAmt);
+        emit UndoDeposit(cId, susdsAmt, to);
     }
 
-    function undoDepositGetUsdsAll(uint256 cId) external returns (uint256 usdsAmt) {
+    function undoDepositGetUsdsAll(uint256 cId, address to) external returns (uint256 usdsAmt) {
         require(cId == cCId, "SrUsdsHandler/not-current-cId");
 
         uint256 susdsAmt = cycles[cId].susdsIn[msg.sender];
         cycles[cId].susdsIn[msg.sender] = 0;
         cycles[cId].totSusdsIn -= susdsAmt;
-        usdsAmt = susds.redeem(susdsAmt, msg.sender, address(this));
+        usdsAmt = susds.redeem(susdsAmt, to, address(this));
 
-        emit UndoDeposit(cId, susdsAmt);
+        emit UndoDeposit(cId, susdsAmt, to);
     }
 
     // Initiate srUSDS -> sUSDS/USDS path
@@ -262,12 +262,12 @@ contract SrUsdsHandler {
 
     // Undo srUSDS -> sUSDS/USDS path
 
-    function undoRedeem(uint256 cId, uint256 srusdsAmt) external {
+    function undoRedeem(uint256 cId, uint256 srusdsAmt, address to) external {
         require(cId == cCId, "SrUsdsHandler/not-current-cId");
         cycles[cId].srusdsOut[msg.sender] -= srusdsAmt;
         cycles[cId].totSrusdsOut -= srusdsAmt;
-        srusds.transfer(msg.sender, srusdsAmt);
-        emit UndoRedeem(cId, srusdsAmt);
+        srusds.transfer(to, srusdsAmt);
+        emit UndoRedeem(cId, srusdsAmt, to);
     }
 
     // Settle cycle and free up to finish deposits and redeems
@@ -320,7 +320,7 @@ contract SrUsdsHandler {
         srusdsAmt = susdsIn_ * RAY / cycles[cId].chi;
         srusds.transfer(to, srusdsAmt);
 
-        emit FinishDeposit(cId, srusdsAmt);
+        emit FinishDeposit(cId, srusdsAmt, to);
     }
 
     // Finish srUSDS -> sUSDS/USDS path
@@ -335,7 +335,7 @@ contract SrUsdsHandler {
         susdsAmt = srusdsAmt * cycles[cId].chi / RAY;
         susds.transfer(to, susdsAmt);
 
-        emit FinishRedeem(cId, susdsAmt);
+        emit FinishRedeem(cId, susdsAmt, to);
     }
 
     function finishRedeemGetUsds(uint256 cId, address to) external returns (uint256 usdsAmt) {
@@ -348,6 +348,6 @@ contract SrUsdsHandler {
         uint256 susdsAmt = srusdsAmt * cycles[cId].chi / RAY;
         usdsAmt = susds.redeem(susdsAmt, to, address(this));
 
-        emit FinishRedeem(cId, susdsAmt);
+        emit FinishRedeem(cId, susdsAmt, to);
     }
 }

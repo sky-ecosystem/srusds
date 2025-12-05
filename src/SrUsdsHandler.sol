@@ -62,16 +62,20 @@ contract SrUsdsHandler {
 
     // --- Storage Variables ---
 
-    mapping (address => uint256) public wards;
-    mapping (uint256 tau => mapping (address owner => uint256 amt)) public susdsIn;
-    mapping (uint256 tau => mapping (address owner => uint256 amt)) public srusdsOut;
-    mapping (uint256 tau => uint256 amt) public totSusdsIn;
-    mapping (uint256 tau => uint256 amt) public totSrusdsOut;
-    mapping (uint256 tau =>  int256 amt) public settles;
-    mapping (uint256 tau => uint256 chi) public chis;
-
+    mapping (address usr => uint256 allowed) public wards;
+    mapping (uint256 cId => Cycle cycle) public cycles;
+    uint256 public cCId; // Current Cycle Id
     uint256 public hop;
-    uint256 public tau;
+
+    struct Cycle {
+        uint256 end;
+        mapping (address owner => uint256 amt) susdsIn;
+        mapping (address owner => uint256 amt) srusdsOut;
+        uint256 totSusdsIn;
+        uint256 totSrusdsOut;
+        int256  settleAmt;
+        uint256 chi;
+    }
 
     // --- Immutables ---
 
@@ -88,16 +92,19 @@ contract SrUsdsHandler {
 
     // --- Events ---
 
-    // Admin
     event Rely(address indexed usr);
     event Deny(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
-    event InitiateDeposit(uint256 tau_, uint256 susdsAmt);
-    event UndoDeposit(uint256 tau_, uint256 susdsAmt);
-    event InitiateRedeem(uint256 tau_, uint256 srUsdsAmt);
-    event UndoRedeem(uint256 tau_, uint256 srUsdsAmt);
-    event FinishRedeem(uint256 tau_, uint256 susdsAmt);
-    event FinishDeposit(uint256 tau_, uint256 srUsdsAmt);
+    event Init(uint256 end);
+    event Update         (uint256 indexed cId, uint256 end);
+    event Plan           (uint256 indexed cId,  int256 susdsAmt);
+    event InitiateDeposit(uint256 indexed cId, uint256 susdsAmt);
+    event UndoDeposit    (uint256 indexed cId, uint256 susdsAmt);
+    event InitiateRedeem (uint256 indexed cId, uint256 srUsdsAmt);
+    event UndoRedeem     (uint256 indexed cId, uint256 srUsdsAmt);
+    event Settle         (uint256 indexed cId);
+    event FinishRedeem   (uint256 indexed cId, uint256 susdsAmt);
+    event FinishDeposit  (uint256 indexed cId, uint256 srUsdsAmt);
 
     // --- Modifiers ---
 
@@ -122,18 +129,27 @@ contract SrUsdsHandler {
         vat.hope(address(usdsJoin));
 
         wards[msg.sender] = 1;
+
         emit Rely(msg.sender);
+    }
+
+    // --- Internals ---
+
+    function _max(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = x > y ? x : y;
     }
 
     // --- Admin functions ---
 
     function rely(address usr) external auth {
         wards[usr] = 1;
+
         emit Rely(usr);
     }
 
     function deny(address usr) external auth {
         wards[usr] = 0;
+
         emit Deny(usr);
     }
 
@@ -141,21 +157,128 @@ contract SrUsdsHandler {
         if (what == "hop") {
             hop = data;
         } else revert("SrUsdsHandler/file-unrecognized-param");
+
         emit File(what, data);
     }
 
-    function plan(uint256 tau_, int256 amt) external auth {
-        require(tau_ == tau, "SrUsdsHandler/not-current-tau");
-        settles[tau_] = amt;
+    function init(uint256 end) external auth {
+        require(cCId == 0);
+        require(end > block.timestamp, "SrUsdsHandler/end-too-soon");
+
+        cycles[++cCId].end = end;
+
+        emit Init(end);
+    }
+
+    function update(uint256 cId, uint256 end) external auth {
+        require(cId == cCId, "SrUsdsHandler/not-current-cycle");
+        require(end >= block.timestamp, "SrUsdsHandler/end-past");
+
+        cycles[cId].end = end;
+
+        emit Update(cId, end);
+    }
+
+    function plan(uint256 cId, int256 susdsAmt) external auth {
+        require(cId == cCId, "SrUsdsHandler/not-current-cycle");
+
+        cycles[cId].settleAmt = susdsAmt;
+
+        emit Plan(cId, susdsAmt);
     }
 
     // --- User functions ---
 
-    function settle() external {
-        uint256 tau_ = tau;
-        require(block.timestamp >= tau_, "SrUsdsHandler/current-tau-not-finished");
+    // Initiate sUSDS/USDS -> srUSDS path
 
-        int256 susdsAmt = settles[tau_];
+    function initiateDepositWithSUsds(uint256 cId, uint256 susdsAmt) external {
+        require(cId > 0, "SrUsdsHandler/not-init");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+
+        susds.transferFrom(msg.sender, address(this), susdsAmt);
+        cycles[cId].susdsIn[msg.sender] += susdsAmt;
+        cycles[cId].totSusdsIn += susdsAmt;
+
+        emit InitiateDeposit(cId, susdsAmt);
+    }
+
+    function initiateDepositWithUsds(uint256 cId, uint256 usdsAmt) external {
+        require(cId > 0, "SrUsdsHandler/not-init");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+
+        usds.transferFrom(msg.sender, address(this), usdsAmt);
+        uint256 susdsAmt = susds.deposit(usdsAmt, address(this));
+        cycles[cId].susdsIn[msg.sender] += susdsAmt;
+        cycles[cId].totSusdsIn += susdsAmt;
+
+        emit InitiateDeposit(cId, susdsAmt);
+    }
+
+    // Undo sUSDS/USDS -> srUSDS path
+
+    function undoDepositGetSUsds(uint256 cId, uint256 susdsAmt) external {
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+
+        cycles[cId].susdsIn[msg.sender] -= susdsAmt;
+        cycles[cId].totSusdsIn -= susdsAmt;
+        susds.transfer(msg.sender, susdsAmt);
+
+        emit UndoDeposit(cId, susdsAmt);
+    }
+
+    function undoDepositGetUsds(uint256 cId, uint256 usdsAmt) external {
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+
+        uint256 susdsAmt = susds.withdraw(usdsAmt, msg.sender, address(this));
+        cycles[cId].susdsIn[msg.sender] -= susdsAmt;
+        cycles[cId].totSusdsIn -= susdsAmt;
+
+        emit UndoDeposit(cId, susdsAmt);
+    }
+
+    function undoDepositGetUsdsAll(uint256 cId) external returns (uint256 usdsAmt) {
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+
+        uint256 susdsAmt = cycles[cId].susdsIn[msg.sender];
+        cycles[cId].susdsIn[msg.sender] = 0;
+        cycles[cId].totSusdsIn -= susdsAmt;
+        usdsAmt = susds.redeem(susdsAmt, msg.sender, address(this));
+
+        emit UndoDeposit(cId, susdsAmt);
+    }
+
+    // Initiate srUSDS -> sUSDS/USDS path
+
+    function initiateRedeem(uint256 cId, uint256 srusdsAmt) external {
+        require(cId > 0, "SrUsdsHandler/not-init");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+
+        srusds.transferFrom(msg.sender, address(this), srusdsAmt);
+        cycles[cId].srusdsOut[msg.sender] += srusdsAmt;
+        cycles[cId].totSrusdsOut += srusdsAmt;
+
+        emit InitiateRedeem(cId, srusdsAmt);
+    }
+
+    // Undo srUSDS -> sUSDS/USDS path
+
+    function undoRedeem(uint256 cId, uint256 srusdsAmt) external {
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+        cycles[cId].srusdsOut[msg.sender] -= srusdsAmt;
+        cycles[cId].totSrusdsOut -= srusdsAmt;
+        srusds.transfer(msg.sender, srusdsAmt);
+        emit UndoRedeem(cId, srusdsAmt);
+    }
+
+    // Settle cycle and free up to finish deposits and redeems
+
+    function settle(uint256 cId) external {
+        require(cId > 0, "SrUsdsHandler/not-init");
+        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+        uint256 end = cycles[cId].end;
+        require(block.timestamp >= end, "SrUsdsHandler/current-cycle-not-finished");
+
+        int256 susdsAmt = cycles[cId].settleAmt;
         if (susdsAmt > 0) {
             uint256 usdsAmt = susds.previewMint(uint256(susdsAmt));
             vat.suck(address(this), address(this), usdsAmt * RAY);
@@ -170,8 +293,8 @@ contract SrUsdsHandler {
         }
 
         // TODO: Review roundings
-        uint256 totSusdsIn_   = totSusdsIn[tau_];
-        uint256 totSrusdsOut_ = totSrusdsOut[tau_];
+        uint256 totSusdsIn_   = cycles[cId].totSusdsIn;
+        uint256 totSrusdsOut_ = cycles[cId].totSrusdsOut;
         uint256 totSusdsOut_  = totSrusdsOut_ * chi / RAY;
         if (totSusdsIn_ >= totSusdsOut_) {
             srusds.deposit(totSusdsIn_ - totSusdsOut_, address(this));
@@ -179,113 +302,52 @@ contract SrUsdsHandler {
             srusds.redeem(totSrusdsOut_ - totSusdsIn_ * RAY / chi, address(this), address(this));
         }
 
-        totSusdsIn[tau_] = totSrusdsOut[tau_] = 0; // Note: No need to update but still doing to show the value is not relevant anymore
-        chis[tau_] = chi;
-        tau = tau_ + hop;
+        cycles[cId].chi = chi;
+        cycles[++cCId].end = end + hop;
 
-        // TODO: Review if necessary an event
-    }
-
-    // Initiate sUSDS/USDS -> srUSDS path
-
-    function initiateDepositWithSUsds(uint256 tau_, uint256 susdsAmt) external {
-        require(tau_ == tau, "SrUsdsHandler/not-current-tau");
-        require(tau_ > 0, "SrUsdsHandler/missing-init");
-        susds.transferFrom(msg.sender, address(this), susdsAmt);
-        susdsIn[tau_][msg.sender] += susdsAmt;
-        totSusdsIn[tau_] += susdsAmt;
-        emit InitiateDeposit(tau_, susdsAmt);
-    }
-
-    function initiateDepositWithUsds(uint256 tau_, uint256 usdsAmt) external {
-        require(tau_ == tau, "SrUsdsHandler/not-current-tau");
-        require(tau_ > 0, "SrUsdsHandler/missing-init");
-        usds.transferFrom(msg.sender, address(this), usdsAmt);
-        uint256 susdsAmt = susds.deposit(usdsAmt, address(this));
-        susdsIn[tau_][msg.sender] += susdsAmt;
-        totSusdsIn[tau_] += susdsAmt;
-        emit InitiateDeposit(tau_, susdsAmt);
-    }
-
-    // Undo sUSDS/USDS -> srUSDS path
-
-    function undoDepositGetSUsds(uint256 tau_, uint256 susdsAmt) external {
-        require(tau_ == tau, "SrUsdsHandler/not-current-tau");
-        susdsIn[tau_][msg.sender] -= susdsAmt;
-        totSusdsIn[tau_] -= susdsAmt;
-        susds.transfer(msg.sender, susdsAmt);
-        emit UndoDeposit(tau_, susdsAmt);
-    }
-
-    function undoDepositGetUsds(uint256 tau_, uint256 usdsAmt) external {
-        require(tau_ == tau, "SrUsdsHandler/not-current-tau");
-        uint256 susdsAmt = susds.withdraw(usdsAmt, msg.sender, address(this));
-        susdsIn[tau_][msg.sender] -= susdsAmt;
-        totSusdsIn[tau_] -= susdsAmt;
-        emit UndoDeposit(tau_, susdsAmt);
-    }
-
-    function undoDepositGetUsdsAll(uint256 tau_) external returns (uint256 usdsAmt) {
-        require(tau_ == tau, "SrUsdsHandler/not-current-tau");
-        uint256 susdsAmt = susdsIn[tau_][msg.sender];
-        susdsIn[tau_][msg.sender] = 0;
-        totSusdsIn[tau_] -= susdsAmt;
-        usdsAmt = susds.redeem(susdsAmt, msg.sender, address(this));
-        emit UndoDeposit(tau_, susdsAmt);
-    }
-
-    // Initiate srUSDS -> sUSDS/USDS path
-
-    function initiateRedeem(uint256 tau_, uint256 srusdsAmt) external {
-        require(tau_ == tau, "SrUsdsHandler/not-current-tau");
-        require(tau_ > 0, "SrUsdsHandler/missing-init");
-        srusds.transferFrom(msg.sender, address(this), srusdsAmt);
-        srusdsOut[tau_][msg.sender] += srusdsAmt;
-        totSrusdsOut[tau_] += srusdsAmt;
-        emit InitiateRedeem(tau_, srusdsAmt);
-    }
-
-    // Undo srUSDS -> sUSDS/USDS path
-
-    function undoRedeem(uint256 tau_, uint256 srusdsAmt) external {
-        require(tau_ == tau, "SrUsdsHandler/not-current-tau");
-        srusdsOut[tau_][msg.sender] -= srusdsAmt;
-        totSrusdsOut[tau_] -= srusdsAmt;
-        srusds.transfer(msg.sender, srusdsAmt);
-        emit UndoRedeem(tau_, srusdsAmt);
+        emit Settle(cId);
     }
 
     // Finish sUSDS/USDS -> srUSDS path
 
-    function finishDeposit(uint256 tau_, address to) external returns (uint256 srusdsAmt) {
-        require(tau_ < tau, "SrUsdsHandler/current-tau");
-        uint256 susdsIn_ = susdsIn[tau_][msg.sender];
+    function finishDeposit(uint256 cId, address to) external returns (uint256 srusdsAmt) {
+        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
+        uint256 susdsIn_ = cycles[cId].susdsIn[msg.sender];
         require(susdsIn_ > 0, "SrUsdsHandler/no-susdsIn-available");
-        susdsIn[tau_][msg.sender] = 0;
-        srusdsAmt = susdsIn_ * RAY / chis[tau_];
+
+        cycles[cId].susdsIn[msg.sender] = 0;
+        cycles[cId].totSusdsIn -= susdsIn_;
+        srusdsAmt = susdsIn_ * RAY / cycles[cId].chi;
         srusds.transfer(to, srusdsAmt);
-        emit FinishDeposit(tau_, srusdsAmt);
+
+        emit FinishDeposit(cId, srusdsAmt);
     }
 
     // Finish srUSDS -> sUSDS/USDS path
 
-    function finishRedeemGetSUsds(uint256 tau_, address to) external returns (uint256 susdsAmt) {
-        require(tau_ < tau, "SrUsdsHandler/current-tau");
-        uint256 srusdsAmt = srusdsOut[tau_][msg.sender];
+    function finishRedeemGetSUsds(uint256 cId, address to) external returns (uint256 susdsAmt) {
+        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
+        uint256 srusdsAmt = cycles[cId].srusdsOut[msg.sender];
         require(srusdsAmt > 0, "SrUsdsHandler/no-srusdsOut-available");
-        srusdsOut[tau_][msg.sender] = 0;
-        susdsAmt = srusdsAmt * chis[tau_] / RAY;
-        susds.transfer(to, srusdsAmt * chis[tau_] / RAY);
-        emit FinishRedeem(tau_, susdsAmt);
+
+        cycles[cId].srusdsOut[msg.sender] = 0;
+        cycles[cId].totSrusdsOut -= srusdsAmt;
+        susdsAmt = srusdsAmt * cycles[cId].chi / RAY;
+        susds.transfer(to, susdsAmt);
+
+        emit FinishRedeem(cId, susdsAmt);
     }
 
-    function finishRedeemGetUsds(uint256 tau_, address to) external returns (uint256 usdsAmt) {
-        require(tau_ < tau, "SrUsdsHandler/current-tau");
-        uint256 srusdsAmt = srusdsOut[tau_][msg.sender];
+    function finishRedeemGetUsds(uint256 cId, address to) external returns (uint256 usdsAmt) {
+        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
+        uint256 srusdsAmt = cycles[cId].srusdsOut[msg.sender];
         require(srusdsAmt > 0, "SrUsdsHandler/no-srusdsOut-available");
-        srusdsOut[tau_][msg.sender] = 0;
-        uint256 susdsAmt = srusdsAmt * chis[tau_] / RAY;
+
+        cycles[cId].srusdsOut[msg.sender] = 0;
+        cycles[cId].totSrusdsOut -= srusdsAmt;
+        uint256 susdsAmt = srusdsAmt * cycles[cId].chi / RAY;
         usdsAmt = susds.redeem(susdsAmt, to, address(this));
-        emit FinishRedeem(tau_, susdsAmt);
+
+        emit FinishRedeem(cId, susdsAmt);
     }
 }

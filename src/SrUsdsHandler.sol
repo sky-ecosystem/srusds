@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/// SrUsds.sol
+/// SrUsdsHandler.sol -- Handler for srUSDS cycles with LCTS queue integration
 
 // Copyright (C) 2017, 2018, 2019 dbrock, rain, mrchico
 // Copyright (C) 2021 Dai Foundation
@@ -23,28 +23,25 @@ pragma solidity ^0.8.21;
 interface SrUsdsLike {
     function susds() external view returns (SUsdsLike);
     function settle(int256) external returns (uint256);
-    function transfer(address, uint256) external;
-    function transferFrom(address, address, uint256) external;
-    function deposit(uint256, address) external;
-    function redeem(uint256, address, address) external;
+    function transfer(address, uint256) external returns (bool);
+    function transferFrom(address, address, uint256) external returns (bool);
+    function approve(address, uint256) external returns (bool);
 }
 
 interface SUsdsLike {
     function usds() external view returns (UsdsLike);
     function previewMint(uint256) external view returns (uint256);
-    function approve(address, uint256) external;
-    function transfer(address, uint256) external;
-    function transferFrom(address, address, uint256) external;
     function deposit(uint256, address) external returns (uint256);
+    function approve(address, uint256) external;
     function mint(uint256, address) external;
     function redeem(uint256, address, address) external returns (uint256);
-    function withdraw(uint256, address, address) external returns (uint256);
+    function transfer(address, uint256) external returns (bool);
+    function transferFrom(address, address, uint256) external returns (bool);
 }
 
 interface UsdsLike {
     function approve(address, uint256) external;
-    function transfer(address, uint256) external;
-    function transferFrom(address, address, uint256) external;
+    function transferFrom(address, address, uint256) external returns (bool);
 }
 
 interface UsdsJoinLike {
@@ -58,6 +55,20 @@ interface VatLike {
     function suck(address, address, uint256) external;
 }
 
+interface LCTSDepositQueueLike {
+    function deposit(uint256 assets, address receiver) external;
+    function claim(address user, address to) external returns (uint256 vaultShares);
+    function claimAndExit(address user, address to) external returns (uint256 assets, uint256 vaultShares);
+    function settle(uint256 capacity) external returns (uint256);
+}
+
+interface LCTSWithdrawQueueLike {
+    function deposit(uint256 vaultShares, address receiver) external;
+    function claim(address user, address to) external returns (uint256 assets);
+    function claimAndExit(address user, address to) external returns (uint256 vaultShares, uint256 assets);
+    function settle(uint256 capacity) external returns (uint256);
+}
+
 contract SrUsdsHandler {
 
     // --- Storage Variables ---
@@ -68,23 +79,23 @@ contract SrUsdsHandler {
     uint256 public hop;
 
     struct Cycle {
-        uint256 end;
-        mapping (address owner => uint256 amt) susdsIn;
-        mapping (address owner => uint256 amt) srusdsOut;
-        uint256 totSusdsIn;
-        uint256 totSrusdsOut;
-        int256  settleAmt;
-        uint256 chi;
+        uint256 end;              // Cycle end timestamp
+        int256  settleAmt;        // Amount to settle (affects chi)
+        uint256 depositCapacity;  // Capacity for deposit queue this cycle
+        uint256 withdrawCapacity; // Capacity for withdraw queue this cycle
+        uint256 chi;              // Chi at settlement
     }
 
     // --- Immutables ---
 
-    SrUsdsLike   public immutable srusds;
-    SUsdsLike    public immutable susds;
-    UsdsLike     public immutable usds;
-    UsdsJoinLike public immutable usdsJoin;
-    VatLike      public immutable vat;
-    address      public immutable vow;
+    SrUsdsLike            public immutable srusds;
+    SUsdsLike             public immutable susds;
+    UsdsLike              public immutable usds;
+    UsdsJoinLike          public immutable usdsJoin;
+    VatLike               public immutable vat;
+    address               public immutable vow;
+    LCTSDepositQueueLike  public immutable depositQueue;
+    LCTSWithdrawQueueLike public immutable withdrawQueue;
 
     // --- Constants ---
 
@@ -96,15 +107,16 @@ contract SrUsdsHandler {
     event Deny(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
     event Init(uint256 end);
-    event Update         (uint256 indexed cId, uint256 end);
-    event Plan           (uint256 indexed cId,  int256 susdsAmt);
-    event InitiateDeposit(uint256 indexed cId, uint256 susdsAmt);
-    event UndoDeposit    (uint256 indexed cId, uint256 susdsAmt,  address to);
-    event InitiateRedeem (uint256 indexed cId, uint256 srUsdsAmt);
-    event UndoRedeem     (uint256 indexed cId, uint256 srUsdsAmt, address to);
-    event Settle         (uint256 indexed cId);
-    event FinishRedeem   (uint256 indexed cId, uint256 susdsAmt,  address to);
-    event FinishDeposit  (uint256 indexed cId, uint256 srUsdsAmt, address to);
+    event Update(uint256 indexed cId, uint256 end);
+    event Plan(uint256 indexed cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
+    event Settle(uint256 indexed cId, uint256 chi, uint256 depositsConverted, uint256 withdrawsConverted);
+    event DepositUsds(uint256 indexed cId, address indexed receiver, uint256 usdsAmt, uint256 susdsAmt);
+    event DepositSusds(uint256 indexed cId, address indexed receiver, uint256 susdsAmt);
+    event ClaimDeposit(uint256 indexed cId, address indexed to, uint256 srUsdsAmt);
+    event ExitDeposit(uint256 indexed cId, address indexed to, uint256 susdsAmt, uint256 srUsdsAmt);
+    event Redeem(uint256 indexed cId, address indexed receiver, uint256 srUsdsAmt);
+    event ClaimRedeem(uint256 indexed cId, address indexed to, uint256 susdsAmt);
+    event ExitRedeem(uint256 indexed cId, address indexed to, uint256 srUsdsAmt, uint256 susdsAmt);
 
     // --- Modifiers ---
 
@@ -115,28 +127,37 @@ contract SrUsdsHandler {
 
     // --- Constructor ---
 
-    constructor(address srusds_, address usdsJoin_, address vow_) {
+    constructor(
+        address srusds_,
+        address usdsJoin_,
+        address vow_,
+        address depositQueue_,
+        address withdrawQueue_
+    ) {
         srusds = SrUsdsLike(srusds_);
         susds = srusds.susds();
         usds = susds.usds();
         usdsJoin = UsdsJoinLike(usdsJoin_);
         vat = VatLike(usdsJoin.vat());
         vow = vow_;
+        depositQueue = LCTSDepositQueueLike(depositQueue_);
+        withdrawQueue = LCTSWithdrawQueueLike(withdrawQueue_);
 
+        // Approvals for settlement (chi adjustments)
         susds.approve(address(srusds), type(uint256).max);
         usds.approve(address(susds), type(uint256).max);
         usds.approve(address(usdsJoin), type(uint256).max);
         vat.hope(address(usdsJoin));
 
+        // Approvals for user-facing deposit queue operations
+        susds.approve(depositQueue_, type(uint256).max);
+
+        // Approvals for user-facing withdraw queue operations
+        srusds.approve(withdrawQueue_, type(uint256).max);
+
         wards[msg.sender] = 1;
 
         emit Rely(msg.sender);
-    }
-
-    // --- Internals ---
-
-    function _max(uint256 x, uint256 y) internal pure returns (uint256 z) {
-        z = x > y ? x : y;
     }
 
     // --- Admin functions ---
@@ -162,7 +183,7 @@ contract SrUsdsHandler {
     }
 
     function init(uint256 end) external auth {
-        require(cCId == 0);
+        require(cCId == 0, "SrUsdsHandler/already-init");
         require(end > block.timestamp, "SrUsdsHandler/end-too-soon");
 
         cycles[++cCId].end = end;
@@ -179,175 +200,213 @@ contract SrUsdsHandler {
         emit Update(cId, end);
     }
 
-    function plan(uint256 cId, int256 susdsAmt) external auth {
+    /// @notice Plan the settlement parameters for a cycle
+    /// @param cId Cycle ID (must be current cycle)
+    /// @param settleAmt Amount of sUSDS to add (positive) or remove (negative) from srUSDS backing
+    /// @param depositCapacity_ Maximum sUSDS to convert to srUSDS via deposit queue
+    /// @param withdrawCapacity_ Maximum srUSDS to convert to sUSDS via withdraw queue
+    function plan(
+        uint256 cId,
+        int256 settleAmt,
+        uint256 depositCapacity_,
+        uint256 withdrawCapacity_
+    ) external auth {
         require(cId == cCId, "SrUsdsHandler/not-current-cycle");
 
-        cycles[cId].settleAmt = susdsAmt;
+        Cycle storage c = cycles[cId];
+        c.settleAmt = settleAmt;
+        c.depositCapacity = depositCapacity_;
+        c.withdrawCapacity = withdrawCapacity_;
 
-        emit Plan(cId, susdsAmt);
+        emit Plan(cId, settleAmt, depositCapacity_, withdrawCapacity_);
     }
 
-    // --- User functions ---
+    // --- View functions ---
 
-    // Initiate sUSDS/USDS -> srUSDS path
-
-    function initiateDepositWithSUsds(uint256 cId, uint256 susdsAmt) external {
-        require(cId > 0, "SrUsdsHandler/not-init");
-        require(cId == cCId, "SrUsdsHandler/not-current-cId");
-
-        susds.transferFrom(msg.sender, address(this), susdsAmt);
-        cycles[cId].susdsIn[msg.sender] += susdsAmt;
-        cycles[cId].totSusdsIn += susdsAmt;
-
-        emit InitiateDeposit(cId, susdsAmt);
+    /// @notice Get the end timestamp of the current cycle
+    /// @return End timestamp (used by Settler for timing checks)
+    function tau() external view returns (uint256) {
+        return cycles[cCId].end;
     }
 
-    function initiateDepositWithUsds(uint256 cId, uint256 usdsAmt) external {
-        require(cId > 0, "SrUsdsHandler/not-init");
-        require(cId == cCId, "SrUsdsHandler/not-current-cId");
+    /// @notice Get cycle details
+    /// @param cId Cycle ID
+    /// @return end Cycle end timestamp
+    /// @return settleAmt Settlement amount
+    /// @return depositCapacity Deposit queue capacity
+    /// @return withdrawCapacity Withdraw queue capacity
+    /// @return chi Chi value at settlement (0 if not yet settled)
+    function getCycle(uint256 cId) external view returns (
+        uint256 end,
+        int256 settleAmt,
+        uint256 depositCapacity,
+        uint256 withdrawCapacity,
+        uint256 chi
+    ) {
+        Cycle storage c = cycles[cId];
+        return (c.end, c.settleAmt, c.depositCapacity, c.withdrawCapacity, c.chi);
+    }
 
+    // --- User Deposit Functions (USDS/sUSDS -> srUSDS via queue) ---
+
+    /// @notice Deposit USDS to the deposit queue (converts to sUSDS internally)
+    /// @param cId Cycle ID (must be current cycle)
+    /// @param usdsAmt Amount of USDS to deposit
+    /// @param receiver Address to receive queue position
+    function depositUsds(uint256 cId, uint256 usdsAmt, address receiver) external {
+        require(cId == cCId, "SrUsdsHandler/not-current-cycle");
         usds.transferFrom(msg.sender, address(this), usdsAmt);
         uint256 susdsAmt = susds.deposit(usdsAmt, address(this));
-        cycles[cId].susdsIn[msg.sender] += susdsAmt;
-        cycles[cId].totSusdsIn += susdsAmt;
-
-        emit InitiateDeposit(cId, susdsAmt);
+        depositQueue.deposit(susdsAmt, receiver);
+        emit DepositUsds(cId, receiver, usdsAmt, susdsAmt);
     }
 
-    // Undo sUSDS/USDS -> srUSDS path
-
-    function undoDepositGetSUsds(uint256 cId, uint256 susdsAmt, address to) external {
-        require(cId == cCId, "SrUsdsHandler/not-current-cId");
-
-        cycles[cId].susdsIn[msg.sender] -= susdsAmt;
-        cycles[cId].totSusdsIn -= susdsAmt;
-        susds.transfer(to, susdsAmt);
-
-        emit UndoDeposit(cId, susdsAmt, to);
+    /// @notice Deposit sUSDS directly to the deposit queue
+    /// @param cId Cycle ID (must be current cycle)
+    /// @param susdsAmt Amount of sUSDS to deposit
+    /// @param receiver Address to receive queue position
+    function depositSusds(uint256 cId, uint256 susdsAmt, address receiver) external {
+        require(cId == cCId, "SrUsdsHandler/not-current-cycle");
+        susds.transferFrom(msg.sender, address(this), susdsAmt);
+        depositQueue.deposit(susdsAmt, receiver);
+        emit DepositSusds(cId, receiver, susdsAmt);
     }
 
-    function undoDepositGetUsds(uint256 cId, uint256 usdsAmt, address to) external {
-        require(cId == cCId, "SrUsdsHandler/not-current-cId");
-
-        uint256 susdsAmt = susds.withdraw(usdsAmt, to, address(this));
-        cycles[cId].susdsIn[msg.sender] -= susdsAmt;
-        cycles[cId].totSusdsIn -= susdsAmt;
-
-        emit UndoDeposit(cId, susdsAmt, to);
+    /// @notice Claim srUSDS rewards from deposit queue
+    /// @param to Address to receive srUSDS
+    /// @return srUsdsAmt Amount of srUSDS claimed
+    function claimDeposit(address to) external returns (uint256 srUsdsAmt) {
+        srUsdsAmt = depositQueue.claim(msg.sender, to);
+        emit ClaimDeposit(cCId, to, srUsdsAmt);
     }
 
-    function undoDepositGetUsdsAll(uint256 cId, address to) external returns (uint256 usdsAmt) {
-        require(cId == cCId, "SrUsdsHandler/not-current-cId");
-
-        uint256 susdsAmt = cycles[cId].susdsIn[msg.sender];
-        cycles[cId].susdsIn[msg.sender] = 0;
-        cycles[cId].totSusdsIn -= susdsAmt;
-        usdsAmt = susds.redeem(susdsAmt, to, address(this));
-
-        emit UndoDeposit(cId, susdsAmt, to);
+    /// @notice Claim and exit deposit queue, receive sUSDS + srUSDS
+    /// @param to Address to receive assets
+    /// @return susdsAmt Amount of sUSDS returned (unconverted)
+    /// @return srUsdsAmt Amount of srUSDS claimed (converted rewards)
+    function claimDepositAndExitAsSusds(address to) external returns (uint256 susdsAmt, uint256 srUsdsAmt) {
+        (susdsAmt, srUsdsAmt) = depositQueue.claimAndExit(msg.sender, to);
+        emit ExitDeposit(cCId, to, susdsAmt, srUsdsAmt);
     }
 
-    // Initiate srUSDS -> sUSDS/USDS path
-
-    function initiateRedeem(uint256 cId, uint256 srusdsAmt) external {
-        require(cId > 0, "SrUsdsHandler/not-init");
-        require(cId == cCId, "SrUsdsHandler/not-current-cId");
-
-        srusds.transferFrom(msg.sender, address(this), srusdsAmt);
-        cycles[cId].srusdsOut[msg.sender] += srusdsAmt;
-        cycles[cId].totSrusdsOut += srusdsAmt;
-
-        emit InitiateRedeem(cId, srusdsAmt);
+    /// @notice Claim and exit deposit queue, receive USDS + srUSDS (converts sUSDS to USDS)
+    /// @param to Address to receive assets
+    /// @return usdsAmt Amount of USDS returned (unconverted, converted from sUSDS)
+    /// @return srUsdsAmt Amount of srUSDS claimed (converted rewards)
+    function claimDepositAndExitAsUsds(address to) external returns (uint256 usdsAmt, uint256 srUsdsAmt) {
+        uint256 susdsAmt;
+        (susdsAmt, srUsdsAmt) = depositQueue.claimAndExit(msg.sender, address(this));
+        if (susdsAmt > 0) {
+            usdsAmt = susds.redeem(susdsAmt, to, address(this));
+        }
+        if (srUsdsAmt > 0) {
+            srusds.transfer(to, srUsdsAmt);
+        }
+        emit ExitDeposit(cCId, to, susdsAmt, srUsdsAmt);
     }
 
-    // Undo srUSDS -> sUSDS/USDS path
+    // --- User Redeem Functions (srUSDS -> sUSDS/USDS via queue) ---
 
-    function undoRedeem(uint256 cId, uint256 srusdsAmt, address to) external {
-        require(cId == cCId, "SrUsdsHandler/not-current-cId");
-        cycles[cId].srusdsOut[msg.sender] -= srusdsAmt;
-        cycles[cId].totSrusdsOut -= srusdsAmt;
-        srusds.transfer(to, srusdsAmt);
-        emit UndoRedeem(cId, srusdsAmt, to);
+    /// @notice Queue srUSDS for redemption
+    /// @param cId Cycle ID (must be current cycle)
+    /// @param srUsdsAmt Amount of srUSDS to queue for redemption
+    /// @param receiver Address to receive queue position
+    function redeem(uint256 cId, uint256 srUsdsAmt, address receiver) external {
+        require(cId == cCId, "SrUsdsHandler/not-current-cycle");
+        srusds.transferFrom(msg.sender, address(this), srUsdsAmt);
+        withdrawQueue.deposit(srUsdsAmt, receiver);
+        emit Redeem(cId, receiver, srUsdsAmt);
     }
 
-    // Settle cycle and free up to finish deposits and redeems
+    /// @notice Claim sUSDS from redeem queue
+    /// @param to Address to receive sUSDS
+    /// @return susdsAmt Amount of sUSDS claimed
+    function claimRedeemAsSusds(address to) external returns (uint256 susdsAmt) {
+        susdsAmt = withdrawQueue.claim(msg.sender, to);
+        emit ClaimRedeem(cCId, to, susdsAmt);
+    }
 
+    /// @notice Claim USDS from redeem queue (converts sUSDS to USDS)
+    /// @param to Address to receive USDS
+    /// @return usdsAmt Amount of USDS claimed
+    function claimRedeemAsUsds(address to) external returns (uint256 usdsAmt) {
+        uint256 susdsAmt = withdrawQueue.claim(msg.sender, address(this));
+        if (susdsAmt > 0) {
+            usdsAmt = susds.redeem(susdsAmt, to, address(this));
+        }
+        emit ClaimRedeem(cCId, to, susdsAmt);
+    }
+
+    /// @notice Claim and exit redeem queue, receive srUSDS + sUSDS
+    /// @param to Address to receive assets
+    /// @return srUsdsAmt Amount of srUSDS returned (unconverted)
+    /// @return susdsAmt Amount of sUSDS claimed (converted rewards)
+    function claimRedeemAsSusdsAndExit(address to) external returns (uint256 srUsdsAmt, uint256 susdsAmt) {
+        (srUsdsAmt, susdsAmt) = withdrawQueue.claimAndExit(msg.sender, to);
+        emit ExitRedeem(cCId, to, srUsdsAmt, susdsAmt);
+    }
+
+    /// @notice Claim and exit redeem queue, receive srUSDS + USDS (converts sUSDS to USDS)
+    /// @param to Address to receive assets
+    /// @return srUsdsAmt Amount of srUSDS returned (unconverted)
+    /// @return usdsAmt Amount of USDS claimed (converted from sUSDS)
+    function claimRedeemAsUsdsAndExit(address to) external returns (uint256 srUsdsAmt, uint256 usdsAmt) {
+        uint256 susdsAmt;
+        (srUsdsAmt, susdsAmt) = withdrawQueue.claimAndExit(msg.sender, address(this));
+        if (susdsAmt > 0) {
+            usdsAmt = susds.redeem(susdsAmt, to, address(this));
+        }
+        if (srUsdsAmt > 0) {
+            srusds.transfer(to, srUsdsAmt);
+        }
+        emit ExitRedeem(cCId, to, srUsdsAmt, susdsAmt);
+    }
+
+    // --- Settlement ---
+
+    /// @notice Settle the current cycle
+    /// @param cId Cycle ID (must be current cycle and past end time)
+    /// @dev 1. Adjusts srUSDS chi based on settleAmt
+    ///      2. Processes deposit queue conversions (sUSDS → srUSDS)
+    ///      3. Processes withdraw queue conversions (srUSDS → sUSDS)
+    ///      4. Advances to next cycle
     function settle(uint256 cId) external {
         require(cId > 0, "SrUsdsHandler/not-init");
-        require(cId == cCId, "SrUsdsHandler/not-current-cId");
-        uint256 end = cycles[cId].end;
-        require(block.timestamp >= end, "SrUsdsHandler/current-cycle-not-finished");
+        require(cId == cCId, "SrUsdsHandler/not-current-cycle");
+        Cycle storage c = cycles[cId];
+        require(block.timestamp >= c.end, "SrUsdsHandler/current-cycle-not-finished");
 
-        int256 susdsAmt = cycles[cId].settleAmt;
-        if (susdsAmt > 0) {
-            uint256 usdsAmt = susds.previewMint(uint256(susdsAmt));
+        int256 settleAmt_ = c.settleAmt;
+
+        // Step 1: Handle settleAmt - mint or burn sUSDS to adjust chi
+        if (settleAmt_ > 0) {
+            // Mint sUSDS: suck USDS from vat, convert to sUSDS
+            uint256 usdsAmt = susds.previewMint(uint256(settleAmt_));
             vat.suck(address(this), address(this), usdsAmt * RAY);
             usdsJoin.exit(address(this), usdsAmt);
-            susds.mint(uint256(susdsAmt), address(this));
+            susds.mint(uint256(settleAmt_), address(this));
         }
-        uint256 chi = srusds.settle(susdsAmt);
-        // TODO: Find the best way to fix the possibility that susdAmt might be lower (due how srusds works)
-        if (susdsAmt < 0) {
-            uint256 usdsAmt = susds.redeem(uint256(-susdsAmt), address(this), address(this));
+
+        // Step 2: Update chi on srUSDS (this is based on current supply, before queue processing)
+        uint256 chi = srusds.settle(settleAmt_);
+
+        // Step 3: Handle negative settleAmt - burn sUSDS after chi update
+        if (settleAmt_ < 0) {
+            uint256 usdsAmt = susds.redeem(uint256(-settleAmt_), address(this), address(this));
             usdsJoin.join(vow, usdsAmt);
         }
 
-        // TODO: Review roundings
-        uint256 totSusdsIn_   = cycles[cId].totSusdsIn;
-        uint256 totSrusdsOut_ = cycles[cId].totSrusdsOut;
-        uint256 totSusdsOut_  = totSrusdsOut_ * chi / RAY;
-        if (totSusdsIn_ >= totSusdsOut_) {
-            srusds.deposit(totSusdsIn_ - totSusdsOut_, address(this));
-        } else {
-            srusds.redeem(totSrusdsOut_ - totSusdsIn_ * RAY / chi, address(this), address(this));
-        }
+        // Step 4: Process LCTS queues with the new chi
+        // Deposit queue: sUSDS → srUSDS (users deposited sUSDS, receive srUSDS)
+        uint256 depositsConverted = depositQueue.settle(c.depositCapacity);
 
-        cycles[cId].chi = chi;
-        cycles[++cCId].end = end + hop;
+        // Withdraw queue: srUSDS → sUSDS (users deposited srUSDS, receive sUSDS)
+        uint256 withdrawsConverted = withdrawQueue.settle(c.withdrawCapacity);
 
-        emit Settle(cId);
-    }
+        // Step 5: Record chi and advance cycle
+        c.chi = chi;
+        cycles[++cCId].end = c.end + hop;
 
-    // Finish sUSDS/USDS -> srUSDS path
-
-    function finishDeposit(uint256 cId, address to) external returns (uint256 srusdsAmt) {
-        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
-        uint256 susdsIn_ = cycles[cId].susdsIn[msg.sender];
-        require(susdsIn_ > 0, "SrUsdsHandler/no-susdsIn-available");
-
-        cycles[cId].susdsIn[msg.sender] = 0;
-        cycles[cId].totSusdsIn -= susdsIn_;
-        srusdsAmt = susdsIn_ * RAY / cycles[cId].chi;
-        srusds.transfer(to, srusdsAmt);
-
-        emit FinishDeposit(cId, srusdsAmt, to);
-    }
-
-    // Finish srUSDS -> sUSDS/USDS path
-
-    function finishRedeemGetSUsds(uint256 cId, address to) external returns (uint256 susdsAmt) {
-        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
-        uint256 srusdsAmt = cycles[cId].srusdsOut[msg.sender];
-        require(srusdsAmt > 0, "SrUsdsHandler/no-srusdsOut-available");
-
-        cycles[cId].srusdsOut[msg.sender] = 0;
-        cycles[cId].totSrusdsOut -= srusdsAmt;
-        susdsAmt = srusdsAmt * cycles[cId].chi / RAY;
-        susds.transfer(to, susdsAmt);
-
-        emit FinishRedeem(cId, susdsAmt, to);
-    }
-
-    function finishRedeemGetUsds(uint256 cId, address to) external returns (uint256 usdsAmt) {
-        require(cId < cCId, "SrUsdsHandler/not-prev-cId");
-        uint256 srusdsAmt = cycles[cId].srusdsOut[msg.sender];
-        require(srusdsAmt > 0, "SrUsdsHandler/no-srusdsOut-available");
-
-        cycles[cId].srusdsOut[msg.sender] = 0;
-        cycles[cId].totSrusdsOut -= srusdsAmt;
-        uint256 susdsAmt = srusdsAmt * cycles[cId].chi / RAY;
-        usdsAmt = susds.redeem(susdsAmt, to, address(this));
-
-        emit FinishRedeem(cId, susdsAmt, to);
+        emit Settle(cId, chi, depositsConverted, withdrawsConverted);
     }
 }

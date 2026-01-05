@@ -21,7 +21,8 @@ interface AuthorityLike {
 }
 
 interface HandlerLike {
-    function plan(int256) external;
+    function cCId() external view returns (uint256);
+    function plan(uint256 cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
 }
 
 interface SettlerLike {
@@ -44,6 +45,8 @@ contract SrUsdsMom {
     event HaltSettler(address indexed settler);
     event ZeroMaxMint(address indexed settler);
     event ZeroMaxCut(address indexed settler);
+    event ZeroMaxDepositCapacity(address indexed settler);
+    event ZeroMaxWithdrawCapacity(address indexed settler);
     event ZeroSettle();
 
     // --- Modifiers ---
@@ -107,8 +110,21 @@ contract SrUsdsMom {
         emit ZeroMaxCut(settler);
     }
 
+    function zeroMaxDepositCapacity(address settler) external auth {
+        SettlerLike(settler).file("maxDepositCapacity", 0);
+        emit ZeroMaxDepositCapacity(settler);
+    }
+
+    function zeroMaxWithdrawCapacity(address settler) external auth {
+        SettlerLike(settler).file("maxWithdrawCapacity", 0);
+        emit ZeroMaxWithdrawCapacity(settler);
+    }
+
+    /// @notice Emergency action to zero all settlement parameters
+    /// @dev Sets settleAmt=0, depositCapacity=0, withdrawCapacity=0 for current cycle
     function zeroSettle() external auth {
-        handler.plan(0);
+        uint256 cId = handler.cCId();
+        handler.plan(cId, 0, 0, 0);
         emit ZeroSettle();
     }
 }

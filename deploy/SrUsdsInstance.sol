@@ -22,4 +22,6 @@ struct SrUsdsInstance {
     address handler;
     address settler;
     address mom;
+    address depositQueue;
+    address withdrawQueue;
 }

@@ -26,11 +26,9 @@ import { SrUsds } from "src/SrUsds.sol";
 import { SrUsdsHandler } from "src/SrUsdsHandler.sol";
 import { SrUsdsSettler } from "src/SrUsdsSettler.sol";
 import { SrUsdsMom } from "src/SrUsdsMom.sol";
+import { LCTSDepositQueue } from "src/LCTSDepositQueue.sol";
+import { LCTSWithdrawQueue } from "src/LCTSWithdrawQueue.sol";
 import { SrUsdsInstance } from "./SrUsdsInstance.sol";
-
-interface SPBEAMLike {
-    function conv() external view returns (address);
-}
 
 library SrUsdsDeploy {
     function deploy(
@@ -39,28 +37,45 @@ library SrUsdsDeploy {
     ) internal returns (SrUsdsInstance memory instance) {
         ChainlogAbstract chainlog = ChainlogAbstract(0xdA0Ab1e0017DEbCd72Be8599041a2aa3bA7e740F);
 
-        address _srUsdsImp = address(new SrUsds(
-                                            chainlog.getAddress("SUSDS")
-                                        )
-                                    );
+        address susds = chainlog.getAddress("SUSDS");
+
+        // 1. Deploy SrUsds proxy
+        address _srUsdsImp = address(new SrUsds(susds));
         address _srUsds = address(new ERC1967Proxy(_srUsdsImp, abi.encodeCall(SrUsds.initialize, ())));
         ScriptTools.switchOwner(_srUsds, deployer, owner);
 
-        address _handler = address(new SrUsdsHandler(_srUsds, chainlog.getAddress("USDS_JOIN"), chainlog.getAddress("MCD_VOW")));
+        // 2. Deploy LCTS queues
+        // DepositQueue: sUSDS -> srUSDS (underlying=susds, vault=srusds)
+        address _depositQueue = address(new LCTSDepositQueue(susds, _srUsds));
+        ScriptTools.switchOwner(_depositQueue, deployer, owner);
+
+        // WithdrawQueue: srUSDS -> sUSDS (vault=srusds)
+        address _withdrawQueue = address(new LCTSWithdrawQueue(_srUsds));
+        ScriptTools.switchOwner(_withdrawQueue, deployer, owner);
+
+        // 3. Deploy handler with queue addresses
+        address _handler = address(new SrUsdsHandler(
+            _srUsds,
+            chainlog.getAddress("USDS_JOIN"),
+            chainlog.getAddress("MCD_VOW"),
+            _depositQueue,
+            _withdrawQueue
+        ));
         ScriptTools.switchOwner(_handler, deployer, owner);
 
-        address _settler = address(new SrUsdsSettler(
-            _handler
-        ));
+        // 4. Deploy settler and mom
+        address _settler = address(new SrUsdsSettler(_handler));
         ScriptTools.switchOwner(_settler, deployer, owner);
 
         SrUsdsMom _mom = new SrUsdsMom(_handler);
         _mom.setOwner(owner);
 
-        instance.srUsds    = _srUsds;
-        instance.srUsdsImp = _srUsdsImp;
-        instance.handler   = _handler;
-        instance.settler   = _settler;
-        instance.mom       = address(_mom);
+        instance.srUsds        = _srUsds;
+        instance.srUsdsImp     = _srUsdsImp;
+        instance.handler       = _handler;
+        instance.settler       = _settler;
+        instance.mom           = address(_mom);
+        instance.depositQueue  = _depositQueue;
+        instance.withdrawQueue = _withdrawQueue;
     }
 }

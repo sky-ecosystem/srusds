@@ -18,17 +18,20 @@ pragma solidity ^0.8.21;
 
 interface Handler {
     function tau() external view returns (uint256);
-    function plan(int256) external;
+    function cCId() external view returns (uint256);
+    function plan(uint256 cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
 }
 
 contract SrUsdsSettler {
     // --- Storage Variables ---
     mapping(address => uint256) public wards;
     mapping(address => uint256) public buds;
-    uint8   public bad;     // Circuit breaker flag
-    uint256 public maxMint; // Max mint value [wad]
-    uint256 public maxCut;  // Max cut value [wad]
-    uint256 public zzz;     // Time before tau is reached until the settler can update the value [seconds]
+    uint8   public bad;                // Circuit breaker flag
+    uint256 public maxMint;            // Max mint value [wad]
+    uint256 public maxCut;             // Max cut value [wad]
+    uint256 public maxDepositCapacity; // Max deposit queue capacity [wad]
+    uint256 public maxWithdrawCapacity;// Max withdraw queue capacity [wad]
+    uint256 public zzz;                // Time before tau is reached until the settler can update the value [seconds]
 
     // --- Immutables ---
     Handler public immutable handler;
@@ -39,7 +42,7 @@ contract SrUsdsSettler {
     event Kiss(address indexed usr);
     event Diss(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
-    event Plan(int256 amount);
+    event Plan(uint256 indexed cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
 
     // --- Modifiers ---
     modifier auth() {
@@ -93,19 +96,34 @@ contract SrUsdsSettler {
             maxMint = data;
         } else if (what == "maxCut") {
             maxCut = data;
-        }  else if (what == "zzz") {
+        } else if (what == "maxDepositCapacity") {
+            maxDepositCapacity = data;
+        } else if (what == "maxWithdrawCapacity") {
+            maxWithdrawCapacity = data;
+        } else if (what == "zzz") {
             zzz = data;
         } else revert("SrUsdsSettler/file-unrecognized-param");
         emit File(what, data);
     }
 
-    function plan(int256 amount) external toll good {
+    /// @notice Plan settlement parameters for the current cycle
+    /// @param settleAmt Amount of sUSDS to add (positive) or remove (negative) from srUSDS backing
+    /// @param depositCapacity Maximum sUSDS to convert to srUSDS via deposit queue
+    /// @param withdrawCapacity Maximum srUSDS to convert to sUSDS via withdraw queue
+    function plan(
+        int256 settleAmt,
+        uint256 depositCapacity,
+        uint256 withdrawCapacity
+    ) external toll good {
         require(handler.tau() > block.timestamp + zzz, "SrUsdsSettler/too-late");
-        require(amount <= 0 || uint256(amount) <= maxMint, "SrUsdsSettler/maxMint-exceed");
-        require(amount >= 0 || uint256(-amount) <= maxCut, "SrUsdsSettler/maxCut-exceed");
+        require(settleAmt <= 0 || uint256(settleAmt) <= maxMint, "SrUsdsSettler/maxMint-exceed");
+        require(settleAmt >= 0 || uint256(-settleAmt) <= maxCut, "SrUsdsSettler/maxCut-exceed");
+        require(depositCapacity <= maxDepositCapacity, "SrUsdsSettler/maxDepositCapacity-exceed");
+        require(withdrawCapacity <= maxWithdrawCapacity, "SrUsdsSettler/maxWithdrawCapacity-exceed");
 
-        handler.plan(amount);
+        uint256 cId = handler.cCId();
+        handler.plan(cId, settleAmt, depositCapacity, withdrawCapacity);
 
-        emit Plan(amount);
+        emit Plan(cId, settleAmt, depositCapacity, withdrawCapacity);
     }
 }

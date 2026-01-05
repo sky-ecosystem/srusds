@@ -117,6 +117,8 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
             settlerZzz: 10,
             settlerMaxMint: 100_000e18,
             settlerMaxCut: 100_000e18,
+            settlerMaxDepositCapacity: 100_000e18,
+            settlerMaxWithdrawCapacity: 100_000e18,
             settlerBuds: new address[](0)
         });
         vm.startPrank(pauseProxy);

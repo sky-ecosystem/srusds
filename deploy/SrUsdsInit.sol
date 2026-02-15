@@ -36,14 +36,14 @@ interface HandlerLike {
     function rely(address) external;
 }
 
-interface SettlerLike {
+interface BeamLike {
     function handler() external view returns (address);
     function file(bytes32, uint256) external;
     function kiss(address) external;
     function rely(address) external;
 }
 
-interface SrUsdsMomLike {
+interface LCTSMomLike {
     function handler() external view returns (address);
     function setAuthority(address) external;
 }
@@ -57,12 +57,12 @@ interface LCTSQueueLike {
 
 struct SrUsdsConfig {
     uint256   handlerHop;
-    uint256   settlerZzz;
-    uint256   settlerMaxMint;
-    uint256   settlerMaxCut;
-    uint256   settlerMaxDepositCapacity;
-    uint256   settlerMaxWithdrawCapacity;
-    address[] settlerBuds;
+    uint256   beamZzz;
+    uint256   beamMaxMint;
+    uint256   beamMaxCut;
+    uint256   beamMaxDepositCapacity;
+    uint256   beamMaxWithdrawCapacity;
+    address[] beamBuds;
 }
 
 library SrUsdsInit {
@@ -86,11 +86,11 @@ library SrUsdsInit {
         require(HandlerLike(instance.handler).depositQueue() == instance.depositQueue, "SrUsdsInit/depositQueue-mismatch");
         require(HandlerLike(instance.handler).withdrawQueue() == instance.withdrawQueue, "SrUsdsInit/withdrawQueue-mismatch");
 
-        // --- Validate Settler ---
-        require(SettlerLike(instance.settler).handler() == instance.handler, "SrUsdsInit/settler-handler-mismatch");
+        // --- Validate Beam ---
+        require(BeamLike(instance.beam).handler() == instance.handler, "SrUsdsInit/beam-handler-mismatch");
 
         // --- Validate Mom ---
-        require(SrUsdsMomLike(instance.mom).handler() == instance.handler, "SrUsdsInit/mom-handler-mismatch");
+        require(LCTSMomLike(instance.mom).handler() == instance.handler, "SrUsdsInit/mom-handler-mismatch");
 
         // --- Validate DepositQueue ---
         require(LCTSQueueLike(instance.depositQueue).underlying() == dss.chainlog.getAddress("SUSDS"), "SrUsdsInit/depositQueue-underlying-mismatch");
@@ -115,7 +115,7 @@ library SrUsdsInit {
 
         // --- Configure Handler ---
         HandlerLike(instance.handler).file("hop", cfg.handlerHop);
-        HandlerLike(instance.handler).rely(instance.settler);
+        HandlerLike(instance.handler).rely(instance.beam);
         HandlerLike(instance.handler).rely(instance.mom);
 
         // --- Configure Queues ---
@@ -123,26 +123,26 @@ library SrUsdsInit {
         LCTSQueueLike(instance.depositQueue).rely(instance.handler);
         LCTSQueueLike(instance.withdrawQueue).rely(instance.handler);
 
-        // --- Configure Settler ---
-        SettlerLike(instance.settler).rely(instance.mom);
-        SettlerLike(instance.settler).file("zzz", cfg.settlerZzz);
-        SettlerLike(instance.settler).file("maxMint", cfg.settlerMaxMint);
-        SettlerLike(instance.settler).file("maxCut", cfg.settlerMaxCut);
-        SettlerLike(instance.settler).file("maxDepositCapacity", cfg.settlerMaxDepositCapacity);
-        SettlerLike(instance.settler).file("maxWithdrawCapacity", cfg.settlerMaxWithdrawCapacity);
+        // --- Configure Beam ---
+        BeamLike(instance.beam).rely(instance.mom);
+        BeamLike(instance.beam).file("zzz", cfg.beamZzz);
+        BeamLike(instance.beam).file("maxMint", cfg.beamMaxMint);
+        BeamLike(instance.beam).file("maxCut", cfg.beamMaxCut);
+        BeamLike(instance.beam).file("maxDepositCapacity", cfg.beamMaxDepositCapacity);
+        BeamLike(instance.beam).file("maxWithdrawCapacity", cfg.beamMaxWithdrawCapacity);
 
-        for (uint256 i; i < cfg.settlerBuds.length; i++) {
-            SettlerLike(instance.settler).kiss(cfg.settlerBuds[i]);
+        for (uint256 i; i < cfg.beamBuds.length; i++) {
+            BeamLike(instance.beam).kiss(cfg.beamBuds[i]);
         }
 
         // --- Configure Mom ---
-        SrUsdsMomLike(instance.mom).setAuthority(dss.chainlog.getAddress("MCD_ADM"));
+        LCTSMomLike(instance.mom).setAuthority(dss.chainlog.getAddress("MCD_ADM"));
 
         // --- Update Chainlog ---
         dss.chainlog.setAddress("SRUSDS",              instance.srUsds);
         dss.chainlog.setAddress("SRUSDS_IMP",          instance.srUsdsImp);
         dss.chainlog.setAddress("SRUSDS_HANDLER",      instance.handler);
-        dss.chainlog.setAddress("SRUSDS_SETTLER",      instance.settler);
+        dss.chainlog.setAddress("SRUSDS_BEAM",          instance.beam);
         dss.chainlog.setAddress("SRUSDS_MOM",          instance.mom);
         dss.chainlog.setAddress("SRUSDS_DEPOSIT_QUEUE",  instance.depositQueue);
         dss.chainlog.setAddress("SRUSDS_WITHDRAW_QUEUE", instance.withdrawQueue);

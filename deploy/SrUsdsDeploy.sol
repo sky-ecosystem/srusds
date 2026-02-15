@@ -22,12 +22,12 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 
 import "dss-interfaces/Interfaces.sol";
 
-import { SrUsds } from "src/SrUsds.sol";
-import { SrUsdsHandler } from "src/SrUsdsHandler.sol";
-import { SrUsdsSettler } from "src/SrUsdsSettler.sol";
-import { SrUsdsMom } from "src/SrUsdsMom.sol";
-import { LCTSDepositQueue } from "src/LCTSDepositQueue.sol";
-import { LCTSWithdrawQueue } from "src/LCTSWithdrawQueue.sol";
+import { SrUsds } from "src/srusds/SrUsds.sol";
+import { SrUsdsHandler } from "src/srusds/SrUsdsHandler.sol";
+import { LCTSBeam } from "src/lcts/LCTSBeam.sol";
+import { LCTSMom } from "src/lcts/LCTSMom.sol";
+import { LCTSDepositQueue } from "src/lcts/LCTSDepositQueue.sol";
+import { LCTSWithdrawQueue } from "src/lcts/LCTSWithdrawQueue.sol";
 import { SrUsdsInstance } from "./SrUsdsInstance.sol";
 
 library SrUsdsDeploy {
@@ -63,17 +63,17 @@ library SrUsdsDeploy {
         ));
         ScriptTools.switchOwner(_handler, deployer, owner);
 
-        // 4. Deploy settler and mom
-        address _settler = address(new SrUsdsSettler(_handler));
-        ScriptTools.switchOwner(_settler, deployer, owner);
+        // 4. Deploy beam and mom
+        address _beam = address(new LCTSBeam(_handler));
+        ScriptTools.switchOwner(_beam, deployer, owner);
 
-        SrUsdsMom _mom = new SrUsdsMom(_handler);
+        LCTSMom _mom = new LCTSMom(_handler);
         _mom.setOwner(owner);
 
         instance.srUsds        = _srUsds;
         instance.srUsdsImp     = _srUsdsImp;
         instance.handler       = _handler;
-        instance.settler       = _settler;
+        instance.beam           = _beam;
         instance.mom           = address(_mom);
         instance.depositQueue  = _depositQueue;
         instance.withdrawQueue = _withdrawQueue;

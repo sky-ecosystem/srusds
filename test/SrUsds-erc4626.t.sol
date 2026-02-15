@@ -23,7 +23,7 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 import { VatMock } from "test/mocks/VatMock.sol";
 import { SUsdsMock } from "test/mocks/SUsdsMock.sol";
 
-import { SrUsds } from "src/SrUsds.sol";
+import { SrUsds } from "src/srusds/SrUsds.sol";
 
 abstract contract ERC4626TestReduced is ERC4626Test {
     function test_maxDeposit(Init memory) public override { vm.skip(true); }

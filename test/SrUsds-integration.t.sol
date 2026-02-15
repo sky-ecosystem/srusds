@@ -22,8 +22,8 @@ import "dss-interfaces/Interfaces.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { Upgrades, Options } from "openzeppelin-foundry-upgrades/Upgrades.sol";
 
-import { SrUsds, UUPSUpgradeable, Initializable, ERC1967Utils } from "src/SrUsds.sol";
-import { SrUsdsHandler } from "src/SrUsdsHandler.sol";
+import { SrUsds, UUPSUpgradeable, Initializable, ERC1967Utils } from "src/srusds/SrUsds.sol";
+import { SrUsdsHandler } from "src/srusds/SrUsdsHandler.sol";
 
 import { SrUsdsInstance } from "deploy/SrUsdsInstance.sol";
 import { SrUsdsDeploy } from "deploy/SrUsdsDeploy.sol";
@@ -114,12 +114,12 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         handler = SrUsdsHandler(inst.handler);
         SrUsdsConfig memory conf = SrUsdsConfig({
             handlerHop: 7 days,
-            settlerZzz: 10,
-            settlerMaxMint: 100_000e18,
-            settlerMaxCut: 100_000e18,
-            settlerMaxDepositCapacity: 100_000e18,
-            settlerMaxWithdrawCapacity: 100_000e18,
-            settlerBuds: new address[](0)
+            beamZzz: 10,
+            beamMaxMint: 100_000e18,
+            beamMaxCut: 100_000e18,
+            beamMaxDepositCapacity: 100_000e18,
+            beamMaxWithdrawCapacity: 100_000e18,
+            beamBuds: new address[](0)
         });
         vm.startPrank(pauseProxy);
         SrUsdsInit.init(dss, inst, conf);

@@ -16,13 +16,14 @@
 
 pragma solidity ^0.8.21;
 
-interface Handler {
+interface HandlerLike {
     function tau() external view returns (uint256);
     function cCId() external view returns (uint256);
+    function lock(uint256 cId) external;
     function plan(uint256 cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
 }
 
-contract SrUsdsSettler {
+contract LCTSBeam {
     // --- Storage Variables ---
     mapping(address => uint256) public wards;
     mapping(address => uint256) public buds;
@@ -31,10 +32,10 @@ contract SrUsdsSettler {
     uint256 public maxCut;             // Max cut value [wad]
     uint256 public maxDepositCapacity; // Max deposit queue capacity [wad]
     uint256 public maxWithdrawCapacity;// Max withdraw queue capacity [wad]
-    uint256 public zzz;                // Time before tau is reached until the settler can update the value [seconds]
+    uint256 public zzz;                // Time before tau is reached until the beam can update the value [seconds]
 
     // --- Immutables ---
-    Handler public immutable handler;
+    HandlerLike public immutable handler;
 
     // --- Events ---
     event Rely(address indexed usr);
@@ -42,26 +43,27 @@ contract SrUsdsSettler {
     event Kiss(address indexed usr);
     event Diss(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
+    event Lock(uint256 indexed cId);
     event Plan(uint256 indexed cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
 
     // --- Modifiers ---
     modifier auth() {
-        require(wards[msg.sender] == 1, "SrUsdsSettler/not-authorized");
+        require(wards[msg.sender] == 1, "LCTSBeam/not-authorized");
         _;
     }
 
     modifier toll() {
-        require(buds[msg.sender] == 1, "SrUsdsSettler/not-facilitator");
+        require(buds[msg.sender] == 1, "LCTSBeam/not-facilitator");
         _;
     }
 
     modifier good() {
-        require(bad == 0, "SrUsdsSettler/module-halted");
+        require(bad == 0, "LCTSBeam/module-halted");
         _;
     }
 
     constructor(address _handler) {
-        handler = Handler(_handler);
+        handler = HandlerLike(_handler);
 
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
@@ -90,7 +92,7 @@ contract SrUsdsSettler {
 
     function file(bytes32 what, uint256 data) external auth {
         if (what == "bad") {
-            require(data == 0 || data == 1, "SrUsdsSettler/invalid-bad-value");
+            require(data == 0 || data == 1, "LCTSBeam/invalid-bad-value");
             bad = uint8(data);
         } else if (what == "maxMint") {
             maxMint = data;
@@ -102,24 +104,31 @@ contract SrUsdsSettler {
             maxWithdrawCapacity = data;
         } else if (what == "zzz") {
             zzz = data;
-        } else revert("SrUsdsSettler/file-unrecognized-param");
+        } else revert("LCTSBeam/file-unrecognized-param");
         emit File(what, data);
     }
 
+    /// @notice Lock both queues for the current cycle
+    function lock() external toll good {
+        uint256 cId = handler.cCId();
+        handler.lock(cId);
+        emit Lock(cId);
+    }
+
     /// @notice Plan settlement parameters for the current cycle
-    /// @param settleAmt Amount of sUSDS to add (positive) or remove (negative) from srUSDS backing
-    /// @param depositCapacity Maximum sUSDS to convert to srUSDS via deposit queue
-    /// @param withdrawCapacity Maximum srUSDS to convert to sUSDS via withdraw queue
+    /// @param settleAmt Amount to add (positive) or remove (negative) from vault backing
+    /// @param depositCapacity Maximum underlying to convert via deposit queue
+    /// @param withdrawCapacity Maximum vault shares to convert via withdraw queue
     function plan(
         int256 settleAmt,
         uint256 depositCapacity,
         uint256 withdrawCapacity
     ) external toll good {
-        require(handler.tau() > block.timestamp + zzz, "SrUsdsSettler/too-late");
-        require(settleAmt <= 0 || uint256(settleAmt) <= maxMint, "SrUsdsSettler/maxMint-exceed");
-        require(settleAmt >= 0 || uint256(-settleAmt) <= maxCut, "SrUsdsSettler/maxCut-exceed");
-        require(depositCapacity <= maxDepositCapacity, "SrUsdsSettler/maxDepositCapacity-exceed");
-        require(withdrawCapacity <= maxWithdrawCapacity, "SrUsdsSettler/maxWithdrawCapacity-exceed");
+        require(handler.tau() > block.timestamp + zzz, "LCTSBeam/too-late");
+        require(settleAmt <= 0 || uint256(settleAmt) <= maxMint, "LCTSBeam/maxMint-exceed");
+        require(settleAmt >= 0 || uint256(-settleAmt) <= maxCut, "LCTSBeam/maxCut-exceed");
+        require(depositCapacity <= maxDepositCapacity, "LCTSBeam/maxDepositCapacity-exceed");
+        require(withdrawCapacity <= maxWithdrawCapacity, "LCTSBeam/maxWithdrawCapacity-exceed");
 
         uint256 cId = handler.cCId();
         handler.plan(cId, settleAmt, depositCapacity, withdrawCapacity);

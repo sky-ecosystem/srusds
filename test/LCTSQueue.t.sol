@@ -4,8 +4,8 @@ pragma solidity ^0.8.21;
 
 import "forge-std/Test.sol";
 import { MockERC20, MockERC4626 } from "test/mocks/MockERC4626.sol";
-import { LCTSDepositQueue } from "src/LCTSDepositQueue.sol";
-import { LCTSWithdrawQueue } from "src/LCTSWithdrawQueue.sol";
+import { LCTSDepositQueue } from "src/lcts/LCTSDepositQueue.sol";
+import { LCTSWithdrawQueue } from "src/lcts/LCTSWithdrawQueue.sol";
 
 contract LCTSDepositQueueTest is Test {
     MockERC20 underlying;

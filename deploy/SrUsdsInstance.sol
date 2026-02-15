@@ -20,7 +20,7 @@ struct SrUsdsInstance {
     address srUsds;
     address srUsdsImp;
     address handler;
-    address settler;
+    address beam;
     address mom;
     address depositQueue;
     address withdrawQueue;

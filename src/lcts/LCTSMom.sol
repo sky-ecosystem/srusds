@@ -25,12 +25,12 @@ interface HandlerLike {
     function plan(uint256 cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
 }
 
-interface SettlerLike {
+interface BeamLike {
     function diss(address) external;
     function file(bytes32, uint256) external;
 }
 
-contract SrUsdsMom {
+contract LCTSMom {
     // --- Storage ---
     address public owner;
     address public authority;
@@ -41,22 +41,22 @@ contract SrUsdsMom {
     // --- Events ---
     event SetOwner(address indexed owner);
     event SetAuthority(address indexed authority);
-    event DissSettlerBud(address indexed settler, address bud);
-    event HaltSettler(address indexed settler);
-    event ZeroMaxMint(address indexed settler);
-    event ZeroMaxCut(address indexed settler);
-    event ZeroMaxDepositCapacity(address indexed settler);
-    event ZeroMaxWithdrawCapacity(address indexed settler);
+    event DissBeamBud(address indexed beam, address bud);
+    event HaltBeam(address indexed beam);
+    event ZeroMaxMint(address indexed beam);
+    event ZeroMaxCut(address indexed beam);
+    event ZeroMaxDepositCapacity(address indexed beam);
+    event ZeroMaxWithdrawCapacity(address indexed beam);
     event ZeroSettle();
 
     // --- Modifiers ---
     modifier onlyOwner() {
-        require(msg.sender == owner, "SrUsdsMom/not-owner");
+        require(msg.sender == owner, "LCTSMom/not-owner");
         _;
     }
 
     modifier auth() {
-        require(isAuthorized(msg.sender, msg.sig), "SrUsdsMom/not-authorized");
+        require(isAuthorized(msg.sender, msg.sig), "LCTSMom/not-authorized");
         _;
     }
 
@@ -90,34 +90,34 @@ contract SrUsdsMom {
     }
 
     // --- Emergency Actions ---
-    function dissSettlerBud(address settler, address bud) external auth {
-        SettlerLike(settler).diss(bud);
-        emit DissSettlerBud(settler, bud);
+    function dissBeamBud(address beam, address bud) external auth {
+        BeamLike(beam).diss(bud);
+        emit DissBeamBud(beam, bud);
     }
 
-    function haltSettler(address settler) external auth {
-        SettlerLike(settler).file("bad", 1);
-        emit HaltSettler(settler);
+    function haltBeam(address beam) external auth {
+        BeamLike(beam).file("bad", 1);
+        emit HaltBeam(beam);
     }
 
-    function zeroMaxMint(address settler) external auth {
-        SettlerLike(settler).file("maxMint", 0);
-        emit ZeroMaxMint(settler);
+    function zeroMaxMint(address beam) external auth {
+        BeamLike(beam).file("maxMint", 0);
+        emit ZeroMaxMint(beam);
     }
 
-    function zeroMaxCut(address settler) external auth {
-        SettlerLike(settler).file("maxCut", 0);
-        emit ZeroMaxCut(settler);
+    function zeroMaxCut(address beam) external auth {
+        BeamLike(beam).file("maxCut", 0);
+        emit ZeroMaxCut(beam);
     }
 
-    function zeroMaxDepositCapacity(address settler) external auth {
-        SettlerLike(settler).file("maxDepositCapacity", 0);
-        emit ZeroMaxDepositCapacity(settler);
+    function zeroMaxDepositCapacity(address beam) external auth {
+        BeamLike(beam).file("maxDepositCapacity", 0);
+        emit ZeroMaxDepositCapacity(beam);
     }
 
-    function zeroMaxWithdrawCapacity(address settler) external auth {
-        SettlerLike(settler).file("maxWithdrawCapacity", 0);
-        emit ZeroMaxWithdrawCapacity(settler);
+    function zeroMaxWithdrawCapacity(address beam) external auth {
+        BeamLike(beam).file("maxWithdrawCapacity", 0);
+        emit ZeroMaxWithdrawCapacity(beam);
     }
 
     /// @notice Emergency action to zero all settlement parameters

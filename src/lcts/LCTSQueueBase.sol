@@ -92,10 +92,9 @@ abstract contract LCTSQueueBase {
     }
 
     /// @notice Lock the queue, preventing new deposits and exits
-    /// @dev No-op if DORMANT. Reverts if already LOCKED.
+    /// @dev Reverts if not ACTIVE.
     function lock() external auth {
-        if (status == Status.DORMANT) return;
-        require(status == Status.ACTIVE, "LCTSQueueBase/already-locked");
+        require(status == Status.ACTIVE, "LCTSQueueBase/not-active");
         status = Status.LOCKED;
         emit Lock(currentGen);
     }
@@ -110,6 +109,11 @@ abstract contract LCTSQueueBase {
         require(amount > 0, "LCTSQueueBase/zero-amount");
         require(receiver != address(0), "LCTSQueueBase/zero-address");
 
+        // Lazy activation: DORMANT → ACTIVE on first deposit
+        if (status == Status.DORMANT) {
+            status = Status.ACTIVE;
+        }
+
         Position storage pos = positions[receiver];
 
         // If user has position in finalized generation, settle it first
@@ -120,11 +124,6 @@ abstract contract LCTSQueueBase {
         // If user has position in current generation, claim pending rewards
         if (pos.shares > 0 && pos.gen == currentGen) {
             _claimRewards(receiver, receiver);
-        }
-
-        // Lazy activation: DORMANT → ACTIVE on first deposit
-        if (status == Status.DORMANT) {
-            status = Status.ACTIVE;
         }
 
         // Calculate internal shares to mint
@@ -178,8 +177,8 @@ abstract contract LCTSQueueBase {
         require(pos.shares > 0, "LCTSQueueBase/no-position");
         require(pos.gen == currentGen, "LCTSQueueBase/not-current-gen");
 
-        // Calculate reward
-        rewardOut = pos.shares * (rewardPerToken - pos.rewardDebt) / WAD;
+        // Claim pending rewards
+        rewardOut = _claimRewards(msg.sender, to);
 
         // Calculate proportional underlying
         underlyingOut = pos.shares * totalUnderlying / totalShares;
@@ -201,9 +200,6 @@ abstract contract LCTSQueueBase {
         }
 
         // Transfer assets
-        if (rewardOut > 0) {
-            _pushReward(to, rewardOut);
-        }
         if (underlyingOut > 0) {
             _pushUnderlying(to, underlyingOut);
         }
@@ -215,8 +211,7 @@ abstract contract LCTSQueueBase {
     /// @param capacity Maximum amount of underlying to convert this epoch
     /// @return converted Actual amount of underlying converted
     function settle(uint256 capacity) external auth returns (uint256 converted) {
-        if (status == Status.DORMANT) return 0;
-        require(status == Status.LOCKED, "LCTSQueueBase/queue-not-locked");
+        require(status == Status.LOCKED, "LCTSQueueBase/not-locked");
 
         // Zero-capacity settle: just unlock back to ACTIVE
         if (totalUnderlying == 0 || capacity == 0) {

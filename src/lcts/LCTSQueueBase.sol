@@ -46,9 +46,7 @@ abstract contract LCTSQueueBase {
     uint256 public currentGen;
     uint256 public totalShares;
     uint256 public totalUnderlying;
-    uint256 public rewardPerToken;    // Cumulative reward per internal share [wad]
-
-    mapping(uint256 gen => uint256 rewardPerToken) public finalRewardPerToken; // [wad]
+    mapping(uint256 gen => uint256) public rewardPerToken; // Cumulative reward per internal share [wad]
     mapping(address => Position) public positions;
 
     // --- Constants ---
@@ -104,7 +102,7 @@ abstract contract LCTSQueueBase {
     /// @notice Deposit underlying assets into the queue
     /// @param amount Amount of underlying to deposit (pulled from msg.sender)
     /// @param receiver Address to receive the queue position
-    function deposit(uint256 amount, address receiver) external {
+    function deposit(uint256 amount, address receiver) external auth {
         require(status != Status.LOCKED, "LCTSQueueBase/queue-locked");
         require(amount > 0, "LCTSQueueBase/zero-amount");
         require(receiver != address(0), "LCTSQueueBase/zero-address");
@@ -116,14 +114,14 @@ abstract contract LCTSQueueBase {
 
         Position storage pos = positions[receiver];
 
-        // If user has position in finalized generation, settle it first
-        if (pos.shares > 0 && pos.gen < currentGen) {
-            _settleFinalized(receiver, receiver);
-        }
-
-        // If user has position in current generation, claim pending rewards
-        if (pos.shares > 0 && pos.gen == currentGen) {
-            _claimRewards(receiver, receiver);
+        if (pos.shares > 0) {
+            if (pos.gen < currentGen) {
+                // If user has position in finalized generation, settle it first
+                _settleFinalized(receiver, receiver);
+            } else {
+                // If user has position in current generation, claim pending rewards
+                _claimRewards(receiver, receiver);
+            }
         }
 
         // Calculate internal shares to mint
@@ -140,7 +138,7 @@ abstract contract LCTSQueueBase {
         totalShares += shares;
         pos.gen = currentGen;
         pos.shares += shares;
-        pos.rewardDebt = rewardPerToken;
+        pos.rewardDebt = rewardPerToken[currentGen];
 
         // Transfer underlying from caller
         _pullUnderlying(msg.sender, amount);
@@ -148,37 +146,39 @@ abstract contract LCTSQueueBase {
         emit Deposit(receiver, currentGen, amount, shares);
     }
 
-    /// @notice Claim accrued rewards for msg.sender
+    /// @notice Claim accrued rewards for a user
+    /// @param user Address whose position to claim from
     /// @param to Address to receive rewards
     /// @return reward Amount of reward claimed
-    function claim(address to) external returns (uint256 reward) {
+    function claim(address user, address to) external auth returns (uint256 reward) {
         require(to != address(0), "LCTSQueueBase/zero-address");
-        Position storage pos = positions[msg.sender];
+        Position storage pos = positions[user];
         require(pos.shares > 0, "LCTSQueueBase/no-position");
 
         if (pos.gen < currentGen) {
             // Finalized generation - full settlement (always allowed)
-            reward = _settleFinalized(msg.sender, to);
+            reward = _settleFinalized(user, to);
         } else {
             // Current generation - claim rewards only (requires ACTIVE)
             require(status == Status.ACTIVE, "LCTSQueueBase/queue-not-active");
-            reward = _claimRewards(msg.sender, to);
+            reward = _claimRewards(user, to);
         }
     }
 
     /// @notice Exit the queue completely (current generation only)
+    /// @param user Address whose position to exit
     /// @param to Address to receive assets
     /// @return underlyingOut Amount of underlying returned
     /// @return rewardOut Amount of reward claimed
-    function claimAndExit(address to) external returns (uint256 underlyingOut, uint256 rewardOut) {
+    function claimAndExit(address user, address to) external auth returns (uint256 underlyingOut, uint256 rewardOut) {
         require(status == Status.ACTIVE, "LCTSQueueBase/queue-not-active");
         require(to != address(0), "LCTSQueueBase/zero-address");
-        Position storage pos = positions[msg.sender];
+        Position storage pos = positions[user];
         require(pos.shares > 0, "LCTSQueueBase/no-position");
         require(pos.gen == currentGen, "LCTSQueueBase/not-current-gen");
 
         // Claim pending rewards
-        rewardOut = _claimRewards(msg.sender, to);
+        rewardOut = _claimRewards(user, to);
 
         // Calculate proportional underlying
         underlyingOut = pos.shares * totalUnderlying / totalShares;
@@ -195,7 +195,6 @@ abstract contract LCTSQueueBase {
         if (totalShares == 0) {
             currentGen++;
             totalUnderlying = 0;
-            rewardPerToken = 0;
             status = Status.DORMANT;
         }
 
@@ -204,7 +203,7 @@ abstract contract LCTSQueueBase {
             _pushUnderlying(to, underlyingOut);
         }
 
-        emit Exit(msg.sender, currentGen, underlyingOut, rewardOut, to);
+        emit Exit(user, currentGen, underlyingOut, rewardOut, to);
     }
 
     /// @notice Settle conversions for the current epoch
@@ -227,7 +226,7 @@ abstract contract LCTSQueueBase {
         uint256 received = _convert(converted);
 
         // Update reward accumulator
-        rewardPerToken += received * WAD / totalShares;
+        rewardPerToken[currentGen] += received * WAD / totalShares;
 
         // Reduce underlying
         totalUnderlying -= converted;
@@ -236,10 +235,8 @@ abstract contract LCTSQueueBase {
 
         // If generation fully drained, finalize it and go DORMANT
         if (finalized) {
-            finalRewardPerToken[currentGen] = rewardPerToken;
             currentGen++;
             totalShares = 0;
-            rewardPerToken = 0;
             status = Status.DORMANT;
         } else {
             status = Status.ACTIVE;
@@ -252,8 +249,9 @@ abstract contract LCTSQueueBase {
 
     function _claimRewards(address user, address to) internal returns (uint256 reward) {
         Position storage pos = positions[user];
-        reward = pos.shares * (rewardPerToken - pos.rewardDebt) / WAD;
-        pos.rewardDebt = rewardPerToken;
+        uint256 rpt = rewardPerToken[currentGen];
+        reward = pos.shares * (rpt - pos.rewardDebt) / WAD;
+        pos.rewardDebt = rpt;
 
         if (reward > 0) {
             _pushReward(to, reward);
@@ -264,10 +262,10 @@ abstract contract LCTSQueueBase {
     function _settleFinalized(address user, address to) internal returns (uint256 reward) {
         Position storage pos = positions[user];
         uint256 userGen = pos.gen;
-        uint256 fRpt = finalRewardPerToken[userGen];
-        require(fRpt > 0, "LCTSQueueBase/not-finalized");
+        uint256 rpt = rewardPerToken[userGen];
+        require(rpt > 0, "LCTSQueueBase/not-finalized");
 
-        reward = pos.shares * (fRpt - pos.rewardDebt) / WAD;
+        reward = pos.shares * (rpt - pos.rewardDebt) / WAD;
 
         // Clear position
         pos.shares = 0;
@@ -285,13 +283,7 @@ abstract contract LCTSQueueBase {
         Position storage pos = positions[user];
         if (pos.shares == 0) return 0;
 
-        uint256 rpt;
-        if (pos.gen < currentGen) {
-            rpt = finalRewardPerToken[pos.gen];
-        } else {
-            rpt = rewardPerToken;
-        }
-        return pos.shares * (rpt - pos.rewardDebt) / WAD;
+        return pos.shares * (rewardPerToken[pos.gen] - pos.rewardDebt) / WAD;
     }
 
     function underlyingBalance(address user) external view returns (uint256) {

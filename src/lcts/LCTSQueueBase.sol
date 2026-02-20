@@ -29,8 +29,6 @@ abstract contract LCTSQueueBase {
 
     // --- Types ---
 
-    enum Status { DORMANT, ACTIVE, LOCKED }
-
     struct Position {
         uint256 gen;        // Generation this position belongs to
         uint256 shares;     // Number of internal shares held
@@ -41,7 +39,7 @@ abstract contract LCTSQueueBase {
 
     mapping(address => uint256) public wards;
 
-    Status public status;
+    uint256 public locked;
 
     uint256 public currentGen;
     uint256 public totalShares;
@@ -90,10 +88,9 @@ abstract contract LCTSQueueBase {
     }
 
     /// @notice Lock the queue, preventing new deposits and exits
-    /// @dev Reverts if not ACTIVE.
     function lock() external auth {
-        require(status == Status.ACTIVE, "LCTSQueueBase/not-active");
-        status = Status.LOCKED;
+        require(locked == 0, "LCTSQueueBase/already-locked");
+        locked = 1;
         emit Lock(currentGen);
     }
 
@@ -103,14 +100,9 @@ abstract contract LCTSQueueBase {
     /// @param amount Amount of underlying to deposit (pulled from msg.sender)
     /// @param receiver Address to receive the queue position
     function deposit(uint256 amount, address receiver) external auth {
-        require(status != Status.LOCKED, "LCTSQueueBase/queue-locked");
+        require(locked == 0, "LCTSQueueBase/queue-locked");
         require(amount > 0, "LCTSQueueBase/zero-amount");
         require(receiver != address(0), "LCTSQueueBase/zero-address");
-
-        // Lazy activation: DORMANT → ACTIVE on first deposit
-        if (status == Status.DORMANT) {
-            status = Status.ACTIVE;
-        }
 
         Position storage pos = positions[receiver];
 
@@ -159,8 +151,8 @@ abstract contract LCTSQueueBase {
             // Finalized generation - full settlement (always allowed)
             reward = _settleFinalized(user, to);
         } else {
-            // Current generation - claim rewards only (requires ACTIVE)
-            require(status == Status.ACTIVE, "LCTSQueueBase/queue-not-active");
+            // Current generation - claim rewards only (requires unlocked)
+            require(locked == 0, "LCTSQueueBase/queue-locked");
             reward = _claimRewards(user, to);
         }
     }
@@ -171,7 +163,7 @@ abstract contract LCTSQueueBase {
     /// @return underlyingOut Amount of underlying returned
     /// @return rewardOut Amount of reward claimed
     function claimAndExit(address user, address to) external auth returns (uint256 underlyingOut, uint256 rewardOut) {
-        require(status == Status.ACTIVE, "LCTSQueueBase/queue-not-active");
+        require(locked == 0, "LCTSQueueBase/queue-locked");
         require(to != address(0), "LCTSQueueBase/zero-address");
         Position storage pos = positions[user];
         require(pos.shares > 0, "LCTSQueueBase/no-position");
@@ -191,11 +183,10 @@ abstract contract LCTSQueueBase {
         pos.shares = 0;
         pos.rewardDebt = 0;
 
-        // If last user exits, go DORMANT and advance generation
+        // If last user exits, advance generation
         if (totalShares == 0) {
             currentGen++;
             totalUnderlying = 0;
-            status = Status.DORMANT;
         }
 
         // Transfer assets
@@ -210,11 +201,11 @@ abstract contract LCTSQueueBase {
     /// @param capacity Maximum amount of underlying to convert this epoch
     /// @return converted Actual amount of underlying converted
     function settle(uint256 capacity) external auth returns (uint256 converted) {
-        require(status == Status.LOCKED, "LCTSQueueBase/not-locked");
+        require(locked == 1, "LCTSQueueBase/not-locked");
 
-        // Zero-capacity settle: just unlock back to ACTIVE
+        // Zero-capacity settle: just unlock
         if (totalUnderlying == 0 || capacity == 0) {
-            status = Status.ACTIVE;
+            locked = 0;
             emit Settle(currentGen, capacity, 0, 0, false);
             return 0;
         }
@@ -233,14 +224,12 @@ abstract contract LCTSQueueBase {
 
         bool finalized = totalUnderlying == 0;
 
-        // If generation fully drained, finalize it and go DORMANT
+        // If generation fully drained, finalize and advance
         if (finalized) {
             currentGen++;
             totalShares = 0;
-            status = Status.DORMANT;
-        } else {
-            status = Status.ACTIVE;
         }
+        locked = 0;
 
         emit Settle(finalized ? currentGen - 1 : currentGen, capacity, converted, received, finalized);
     }

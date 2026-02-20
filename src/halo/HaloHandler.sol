@@ -57,8 +57,8 @@ contract HaloHandler is LCTSHandlerBase {
 
     // --- Internal Hooks ---
 
-    function _settle(uint256 cId) internal override {
-        int256 settleAmt_ = cycles[cId].settleAmt;
+    function _settle() internal override {
+        int256 settleAmt_ = settleAmt;
 
         if (settleAmt_ > 0) {
             prime.transferFrom(treasury, address(this), uint256(settleAmt_));

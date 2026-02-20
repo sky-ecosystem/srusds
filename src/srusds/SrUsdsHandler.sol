@@ -90,8 +90,8 @@ contract SrUsdsHandler is LCTSHandlerBase {
     // --- Internal Hooks ---
 
     /// @dev Adjust srUSDS chi based on settleAmt before queue processing
-    function _settle(uint256 cId) internal override {
-        int256 settleAmt_ = cycles[cId].settleAmt;
+    function _settle() internal override {
+        int256 settleAmt_ = settleAmt;
 
         // Mint sUSDS: suck USDS from vat, convert to sUSDS
         if (settleAmt_ > 0) {

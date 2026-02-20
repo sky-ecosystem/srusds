@@ -26,26 +26,20 @@ interface LCTSQueueLike {
 
 /// @title LCTSHandlerBase
 /// @notice Abstract base for LCTS settlement cycle handlers
-/// @dev Manages cycle lifecycle (init, lock, settle, advance) and queue orchestration.
-///      Subclasses implement product-specific settlement logic via _settle() and _settled().
+/// @dev Manages daily settlement cycles with explicit lock/settle timestamps.
+///      Subclasses implement product-specific settlement logic via _settle().
 abstract contract LCTSHandlerBase {
-
-    // --- Types ---
-
-    struct Cycle {
-        uint256 end;
-        int256  settleAmt;
-        uint256 depositCapacity;
-        uint256 withdrawCapacity;
-    }
 
     // --- Storage Variables ---
 
     mapping(address usr => uint256 allowed) public wards;
-    mapping(uint256 cId => Cycle cycle)     public cycles;
-    uint256 public cCId;    // Current Cycle Id
-    uint256 public hop;     // Cycle duration [seconds]
-    uint256 public locked;  // 0 or 1, tracks lock-per-cycle
+    uint256 public locked;           // 0 == unlocked, 1 == locked
+    uint256 public bgn;              // Time in the day when lock window opens [seconds, e.g. 13 hours == 13:00 UTC]
+    uint256 public end;              // Time in the day when settlement can execute [seconds, e.g. 16 hours == 16:00 UTC]
+    uint256 public buf;              // Time window to call lock [seconds]
+    int256  public settleAmt;        // Underlying adjustment amount
+    uint256 public depositCapacity;  // Deposit queue capacity
+    uint256 public withdrawCapacity; // Withdraw queue capacity
 
     // --- Immutables ---
 
@@ -57,11 +51,9 @@ abstract contract LCTSHandlerBase {
     event Rely(address indexed usr);
     event Deny(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
-    event Init(uint256 end);
-    event Update(uint256 indexed cId, uint256 end);
-    event Lock(uint256 indexed cId);
-    event Plan(uint256 indexed cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
-    event Settle(uint256 indexed cId, uint256 depositsConverted, uint256 withdrawsConverted);
+    event Lock();
+    event Plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
+    event Settle(uint256 depositsConverted, uint256 withdrawsConverted);
 
     // --- Modifiers ---
 
@@ -80,12 +72,6 @@ abstract contract LCTSHandlerBase {
         emit Rely(msg.sender);
     }
 
-    // --- Abstract Functions ---
-
-    /// @dev Called before queue settlement. Implement product-specific logic (e.g., chi adjustment).
-    function _settle(uint256 cId) internal virtual;
-
-
     // --- Auth Functions ---
 
     function rely(address usr) external auth {
@@ -99,95 +85,72 @@ abstract contract LCTSHandlerBase {
     }
 
     function file(bytes32 what, uint256 data) external auth {
-        if (what == "hop") {
-            hop = data;
+        if (what == "bgn") {
+            require(data < 1 days, "LCTSHandlerBase/incorrect-time-in-day");
+            require(buf < end - data, "LCTSHandlerBase/incorrect-set-values");
+            bgn = data;
+        } else if (what == "end") {
+            require(data < 1 days, "LCTSHandlerBase/incorrect-time-in-day");
+            require(buf < data - bgn, "LCTSHandlerBase/incorrect-set-values");
+            end = data;
+        } else if (what == "buf") {
+            require(data < end - bgn, "LCTSHandlerBase/incorrect-set-values");
+            buf = data;
         } else revert("LCTSHandlerBase/file-unrecognized-param");
         emit File(what, data);
     }
 
-    function init(uint256 end) external auth {
-        require(cCId == 0, "LCTSHandlerBase/already-init");
-        require(end > block.timestamp, "LCTSHandlerBase/end-too-soon");
+    /// @notice Lock both queues
+    function lock() external auth {
+        uint256 timeBgn = (block.timestamp / 1 days) * 1 days + bgn;
 
-        cycles[++cCId].end = end;
-        emit Init(end);
-    }
-
-    function update(uint256 cId, uint256 end) external auth {
-        require(cId == cCId, "LCTSHandlerBase/not-current-cycle");
-        require(end >= block.timestamp, "LCTSHandlerBase/end-past");
-
-        cycles[cId].end = end;
-        emit Update(cId, end);
-    }
-
-    /// @notice Set settlement parameters for the current cycle
-    function plan(
-        uint256 cId,
-        int256  settleAmt,
-        uint256 depositCapacity_,
-        uint256 withdrawCapacity_
-    ) external auth {
-        require(cId == cCId, "LCTSHandlerBase/not-current-cycle");
-        Cycle storage c = cycles[cId];
-        c.settleAmt        = settleAmt;
-        c.depositCapacity  = depositCapacity_;
-        c.withdrawCapacity = withdrawCapacity_;
-        emit Plan(cId, settleAmt, depositCapacity_, withdrawCapacity_);
-    }
-
-    /// @notice Lock both queues for the current cycle
-    function lock(uint256 cId) external auth {
-        require(cId == cCId, "LCTSHandlerBase/not-current-cycle");
         require(locked == 0, "LCTSHandlerBase/already-locked");
+        require(block.timestamp >= timeBgn, "LCTSHandlerBase/lock-too-early");
+        require(block.timestamp <= timeBgn + buf, "LCTSHandlerBase/lock-too-late");
 
         depositQueue.lock();
         withdrawQueue.lock();
         locked = 1;
 
-        emit Lock(cId);
+        emit Lock();
     }
+
+    /// @notice Set settlement parameters
+    function plan(
+        int256  settleAmt_,
+        uint256 depositCapacity_,
+        uint256 withdrawCapacity_
+    ) external auth {
+        require(locked == 1, "LCTSHandlerBase/not-locked");
+        settleAmt        = settleAmt_;
+        depositCapacity  = depositCapacity_;
+        withdrawCapacity = withdrawCapacity_;
+        emit Plan(settleAmt_, depositCapacity_, withdrawCapacity_);
+    }
+
+    /// @dev Called before queue settlement. Implement product-specific logic.
+    function _settle() internal virtual;
 
     // --- Settlement ---
 
     /// @notice Settle the current cycle
-    /// @param cId Cycle ID (must be current cycle and past end time)
-    function settle(uint256 cId) external {
-        require(cId > 0, "LCTSHandlerBase/not-init");
-        require(cId == cCId, "LCTSHandlerBase/not-current-cycle");
+    function settle() external {
+        uint256 timeEnd = (block.timestamp / 1 days) * 1 days + end;
         require(locked == 1, "LCTSHandlerBase/not-locked");
-        Cycle storage c = cycles[cId];
-        require(block.timestamp >= c.end, "LCTSHandlerBase/current-cycle-not-finished");
+        require(block.timestamp >= timeEnd, "LCTSHandlerBase/settle-too-early");
 
-        // Product-specific settlement (e.g., chi adjustment)
-        _settle(cId);
+        _settle();
 
         // Process LCTS queues
-        uint256 depositsConverted  = depositQueue.settle(c.depositCapacity);
-        uint256 withdrawsConverted = withdrawQueue.settle(c.withdrawCapacity);
+        uint256 depositsConverted  = depositQueue.settle(depositCapacity);
+        uint256 withdrawsConverted = withdrawQueue.settle(withdrawCapacity);
 
-        // Advance cycle
-        locked = 0;
-        cycles[++cCId].end = c.end + hop;
+        // Reset settlement params
+        locked           = 0;
+        settleAmt        = 0;
+        depositCapacity  = 0;
+        withdrawCapacity = 0;
 
-        emit Settle(cId, depositsConverted, withdrawsConverted);
-    }
-
-    // --- View Functions ---
-
-    /// @notice Get the end timestamp of the current cycle
-    function tau() external view returns (uint256) {
-        return cycles[cCId].end;
-    }
-
-    /// @notice Get cycle details
-    function getCycle(uint256 cId) external view returns (
-        uint256 end,
-        int256  settleAmt,
-        uint256 depositCapacity,
-        uint256 withdrawCapacity
-    ) {
-        Cycle storage c = cycles[cId];
-        return (c.end, c.settleAmt, c.depositCapacity, c.withdrawCapacity);
+        emit Settle(depositsConverted, withdrawsConverted);
     }
 }

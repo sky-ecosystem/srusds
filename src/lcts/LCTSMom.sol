@@ -21,8 +21,7 @@ interface AuthorityLike {
 }
 
 interface HandlerLike {
-    function cCId() external view returns (uint256);
-    function plan(uint256 cId, int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
+    function plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
 }
 
 interface BeamLike {
@@ -121,10 +120,8 @@ contract LCTSMom {
     }
 
     /// @notice Emergency action to zero all settlement parameters
-    /// @dev Sets settleAmt=0, depositCapacity=0, withdrawCapacity=0 for current cycle
     function zeroSettle() external auth {
-        uint256 cId = handler.cCId();
-        handler.plan(cId, 0, 0, 0);
+        handler.plan(0, 0, 0);
         emit ZeroSettle();
     }
 }

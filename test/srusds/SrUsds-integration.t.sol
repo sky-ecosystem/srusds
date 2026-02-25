@@ -25,9 +25,9 @@ import { Upgrades, Options } from "openzeppelin-foundry-upgrades/Upgrades.sol";
 import { SrUsds, UUPSUpgradeable, Initializable, ERC1967Utils } from "src/srusds/SrUsds.sol";
 import { SrUsdsHandler } from "src/srusds/SrUsdsHandler.sol";
 
-import { SrUsdsInstance } from "deploy/SrUsdsInstance.sol";
-import { SrUsdsDeploy } from "deploy/SrUsdsDeploy.sol";
-import { SrUsdsInit, SrUsdsConfig } from "deploy/SrUsdsInit.sol";
+import { SrUsdsInstance } from "deploy/srusds/SrUsdsInstance.sol";
+import { SrUsdsDeploy } from "deploy/srusds/SrUsdsDeploy.sol";
+import { SrUsdsInit, SrUsdsConfig } from "deploy/srusds/SrUsdsInit.sol";
 
 interface SUsdsLike {
     function balanceOf(address) external view returns (uint256);

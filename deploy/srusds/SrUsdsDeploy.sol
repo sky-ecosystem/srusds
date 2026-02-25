@@ -24,10 +24,10 @@ import "dss-interfaces/Interfaces.sol";
 
 import { SrUsds } from "src/srusds/SrUsds.sol";
 import { SrUsdsHandler } from "src/srusds/SrUsdsHandler.sol";
-import { LCTSBeam } from "src/lcts/LCTSBeam.sol";
-import { LCTSMom } from "src/lcts/LCTSMom.sol";
-import { LCTSDepositQueue } from "src/lcts/LCTSDepositQueue.sol";
-import { LCTSWithdrawQueue } from "src/lcts/LCTSWithdrawQueue.sol";
+import { LCTSBeam } from "src/LCTSBeam.sol";
+import { LCTSMom } from "src/LCTSMom.sol";
+import { LCTSDepositQueue } from "src/LCTSDepositQueue.sol";
+import { LCTSWithdrawQueue } from "src/LCTSWithdrawQueue.sol";
 import { SrUsdsInstance } from "./SrUsdsInstance.sol";
 
 library SrUsdsDeploy {

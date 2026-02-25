@@ -4,9 +4,9 @@ pragma solidity ^0.8.21;
 
 import "dss-test/DssTest.sol";
 import { MockERC20, MockERC4626 } from "test/mocks/MockERC4626.sol";
-import { LCTSHandlerBase } from "src/lcts/LCTSHandlerBase.sol";
-import { LCTSDepositQueue } from "src/lcts/LCTSDepositQueue.sol";
-import { LCTSWithdrawQueue } from "src/lcts/LCTSWithdrawQueue.sol";
+import { LCTSHandlerBase } from "src/LCTSHandlerBase.sol";
+import { LCTSDepositQueue } from "src/LCTSDepositQueue.sol";
+import { LCTSWithdrawQueue } from "src/LCTSWithdrawQueue.sol";
 
 contract MockHandler is LCTSHandlerBase {
     uint256 public settleCalled;

@@ -113,12 +113,14 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         token = SrUsds(inst.srUsds);
         handler = SrUsdsHandler(inst.handler);
         SrUsdsConfig memory conf = SrUsdsConfig({
-            handlerHop: 7 days,
-            beamZzz: 10,
+            handlerBgn: 13 hours,
+            handlerEnd: 16 hours,
+            handlerBuf: 30 minutes,
             beamMaxMint: 100_000e18,
             beamMaxCut: 100_000e18,
             beamMaxDepositCapacity: 100_000e18,
             beamMaxWithdrawCapacity: 100_000e18,
+            beamHop: 7 days,
             beamBuds: new address[](0)
         });
         vm.startPrank(pauseProxy);

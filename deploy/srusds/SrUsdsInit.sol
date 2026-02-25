@@ -56,12 +56,14 @@ interface LCTSQueueLike {
 }
 
 struct SrUsdsConfig {
-    uint256   handlerHop;
-    uint256   beamZzz;
+    uint256   handlerBgn;
+    uint256   handlerEnd;
+    uint256   handlerBuf;
     uint256   beamMaxMint;
     uint256   beamMaxCut;
     uint256   beamMaxDepositCapacity;
     uint256   beamMaxWithdrawCapacity;
+    uint256   beamHop;
     address[] beamBuds;
 }
 
@@ -114,7 +116,9 @@ library SrUsdsInit {
         SrUsdsLike(instance.srUsds).rely(instance.withdrawQueue);
 
         // --- Configure Handler ---
-        HandlerLike(instance.handler).file("hop", cfg.handlerHop);
+        HandlerLike(instance.handler).file("end", cfg.handlerEnd);
+        HandlerLike(instance.handler).file("bgn", cfg.handlerBgn);
+        HandlerLike(instance.handler).file("buf", cfg.handlerBuf);
         HandlerLike(instance.handler).rely(instance.beam);
         HandlerLike(instance.handler).rely(instance.mom);
 
@@ -125,11 +129,11 @@ library SrUsdsInit {
 
         // --- Configure Beam ---
         BeamLike(instance.beam).rely(instance.mom);
-        BeamLike(instance.beam).file("zzz", cfg.beamZzz);
         BeamLike(instance.beam).file("maxMint", cfg.beamMaxMint);
         BeamLike(instance.beam).file("maxCut", cfg.beamMaxCut);
         BeamLike(instance.beam).file("maxDepositCapacity", cfg.beamMaxDepositCapacity);
         BeamLike(instance.beam).file("maxWithdrawCapacity", cfg.beamMaxWithdrawCapacity);
+        BeamLike(instance.beam).file("hop", cfg.beamHop);
 
         for (uint256 i; i < cfg.beamBuds.length; i++) {
             BeamLike(instance.beam).kiss(cfg.beamBuds[i]);

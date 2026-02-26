@@ -50,10 +50,10 @@ contract LCTSHandlerBaseTest is DssTest {
         // Fund vault with underlying for redemptions
         underlying.mint(address(vault), 10000e18);
 
-        // Configure daily window: lock at 13:00, settle at 16:00, 1h buffer
-        handler.file("end", 16 hours);
-        handler.file("bgn", 13 hours);
-        handler.file("buf", 1 hours);
+        // Configure daily window: lock at 13:00-14:00, settle at 16:00
+        handler.file("settleTime",  16 hours);
+        handler.file("lockTimeEnd", 14 hours);
+        handler.file("lockTimeBgn", 13 hours);
     }
 
     // Helper: warp to within lock window
@@ -135,88 +135,87 @@ contract LCTSHandlerBaseTest is DssTest {
     }
 
     function testFile() public {
-        checkFileUint(address(handler), "LCTSHandlerBase", ["bgn", "end", "buf"]);
+        checkFileUint(address(handler), "LCTSHandlerBase", ["lockTimeBgn", "lockTimeEnd", "settleTime"]);
     }
 
-    function testFileBgn() public {
+    function testFileLockTimeBgn() public {
         vm.expectEmit();
-        emit File("bgn", 14 hours);
-        handler.file("bgn", 14 hours);
+        emit File("lockTimeBgn", 12 hours);
+        handler.file("lockTimeBgn", 12 hours);
 
-        assertEq(handler.bgn(), 14 hours);
+        assertEq(handler.lockTimeBgn(), 12 hours);
     }
 
-    function testFileEnd() public {
+    function testFileLockTimeEnd() public {
         vm.expectEmit();
-        emit File("end", 17 hours);
-        handler.file("end", 17 hours);
+        emit File("lockTimeEnd", 13.5 hours);
+        handler.file("lockTimeEnd", 13.5 hours);
 
-        assertEq(handler.end(), 17 hours);
+        assertEq(handler.lockTimeEnd(), 13.5 hours);
     }
 
-    function testFileBuf() public {
+    function testFileSettleTime() public {
         vm.expectEmit();
-        emit File("buf", 30 minutes);
-        handler.file("buf", 30 minutes);
+        emit File("settleTime", 17 hours);
+        handler.file("settleTime", 17 hours);
 
-        assertEq(handler.buf(), 30 minutes);
+        assertEq(handler.settleTime(), 17 hours);
     }
 
-    function testFileBgnTooLargeReverts() public {
+    function testFileLockTimeBgnTooLargeReverts() public {
         vm.expectRevert("LCTSHandlerBase/incorrect-time-in-day");
-        handler.file("bgn", 24 hours);
+        handler.file("lockTimeBgn", 24 hours);
     }
 
-    function testFileEndTooLargeReverts() public {
+    function testFileLockTimeEndTooLargeReverts() public {
         vm.expectRevert("LCTSHandlerBase/incorrect-time-in-day");
-        handler.file("end", 24 hours);
+        handler.file("lockTimeEnd", 24 hours);
     }
 
-    function testFileBgnAfterEndReverts() public {
-        // bgn = 17h > end = 16h -> underflow reverts
-        vm.expectRevert();
-        handler.file("bgn", 17 hours);
+    function testFileSettleTimeTooLargeReverts() public {
+        vm.expectRevert("LCTSHandlerBase/incorrect-time-in-day");
+        handler.file("settleTime", 24 hours);
     }
 
-    function testFileEndBeforeBgnReverts() public {
-        // end = 12h < bgn = 13h -> underflow reverts
-        vm.expectRevert();
-        handler.file("end", 12 hours);
+    function testFileLockTimeBgnNotLessLockEndReverts() public {
+        // lockTimeBgn = 15h >= lockTimeEnd = 14h
+        vm.expectRevert("LCTSHandlerBase/not-less-lock-end");
+        handler.file("lockTimeBgn", 15 hours);
     }
 
-    function testFileBufTooLargeReverts() public {
-        // buf must be < end - bgn (16h - 13h = 3h)
-        vm.expectRevert("LCTSHandlerBase/incorrect-set-values");
-        handler.file("buf", 3 hours);
+    function testFileLockTimeEndNotGreaterLockBgnReverts() public {
+        // lockTimeEnd = 12h <= lockTimeBgn = 13h
+        vm.expectRevert("LCTSHandlerBase/not-greater-lock-bgn");
+        handler.file("lockTimeEnd", 12 hours);
     }
 
-    function testFileBgnBreaksBufInvariantReverts() public {
-        // bgn = 15h -> end - bgn = 1h, but buf = 1h, need buf < 1h
-        vm.expectRevert("LCTSHandlerBase/incorrect-set-values");
-        handler.file("bgn", 15 hours);
+    function testFileSettleTimeNotGreaterLockEndReverts() public {
+        // settleTime = 13.5h <= lockTimeEnd = 14h
+        vm.expectRevert("LCTSHandlerBase/not-greater-lock-end");
+        handler.file("settleTime", 13.5 hours);
     }
 
-    function testFileEndBreaksBufInvariantReverts() public {
-        // end = 14 hours -> end - bgn = 1h, but buf = 1h, need buf < 1h
-        vm.expectRevert("LCTSHandlerBase/incorrect-set-values");
-        handler.file("end", 14 hours);
+    function testFileLockTimeEndNotLessSettleReverts() public {
+        // lockTimeEnd = 17h >= settleTime = 16h
+        vm.expectRevert("LCTSHandlerBase/not-less-settle");
+        handler.file("lockTimeEnd", 17 hours);
     }
 
     function testFileBootstrapOrder() public {
-        // Deploy fresh handler with defaults (bgn=0, end=0, buf=0)
+        // Deploy fresh handler with defaults (all 0)
         MockHandler h = new MockHandler(address(depositQueue), address(withdrawQueue));
 
-        // Must set end first (end >= bgn=0, buf=0 < end-0)
-        h.file("end", 20 hours);
-        assertEq(h.end(), 20 hours);
+        // Must set settleTime first (> lockTimeBgn=0, > lockTimeEnd=0)
+        h.file("settleTime", 20 hours);
+        assertEq(h.settleTime(), 20 hours);
 
-        // Then bgn (bgn <= end=20h, buf=0 < 20h-bgn)
-        h.file("bgn", 10 hours);
-        assertEq(h.bgn(), 10 hours);
+        // Then lockTimeEnd (> lockTimeBgn=0, < settleTime=20h)
+        h.file("lockTimeEnd", 15 hours);
+        assertEq(h.lockTimeEnd(), 15 hours);
 
-        // Then buf (buf < end-bgn = 10h)
-        h.file("buf", 2 hours);
-        assertEq(h.buf(), 2 hours);
+        // Then lockTimeBgn (< lockTimeEnd=15h, < settleTime=20h)
+        h.file("lockTimeBgn", 10 hours);
+        assertEq(h.lockTimeBgn(), 10 hours);
     }
 
     // --- Lock Tests ---
@@ -257,7 +256,7 @@ contract LCTSHandlerBaseTest is DssTest {
         assertEq(handler.locked(), 1);
     }
 
-    function testLockAtExactBgnPlusBufAllowed() public {
+    function testLockAtExactLockTimeEndAllowed() public {
         uint256 day = (block.timestamp / 1 days) * 1 days;
         vm.warp(day + 14 hours);
 

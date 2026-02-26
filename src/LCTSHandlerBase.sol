@@ -34,9 +34,9 @@ abstract contract LCTSHandlerBase {
 
     mapping(address usr => uint256 allowed) public wards;
     uint256 public locked;           // 0 == unlocked, 1 == locked
-    uint256 public bgn;              // Time in the day when lock window opens [seconds, e.g. 13 hours == 13:00 UTC]
-    uint256 public end;              // Time in the day when settlement can execute [seconds, e.g. 16 hours == 16:00 UTC]
-    uint256 public buf;              // Time window to call lock [seconds]
+    uint256 public lockTimeBgn;      // Time in the day when lock window opens  [seconds, e.g. 13 hours   == 13:00 UTC]
+    uint256 public lockTimeEnd;      // Time in the day when lock window closes [seconds, e.g. 13.5 hours == 13:30 UTC]
+    uint256 public settleTime;       // Time in the day when settlement can be executed [seconds, e.g. 16 hours == 16:00 UTC]
     int256  public settleAmt;        // Underlying adjustment amount
     uint256 public depositCapacity;  // Deposit queue capacity
     uint256 public withdrawCapacity; // Withdraw queue capacity
@@ -85,28 +85,31 @@ abstract contract LCTSHandlerBase {
     }
 
     function file(bytes32 what, uint256 data) external auth {
-        if (what == "bgn") {
+        if (what == "lockTimeBgn") {
             require(data < 1 days, "LCTSHandlerBase/incorrect-time-in-day");
-            require(buf < end - data, "LCTSHandlerBase/incorrect-set-values");
-            bgn = data;
-        } else if (what == "end") {
+            require(data < lockTimeEnd, "LCTSHandlerBase/not-less-lock-end");
+            lockTimeBgn = data;
+        } else if (what == "lockTimeEnd") {
             require(data < 1 days, "LCTSHandlerBase/incorrect-time-in-day");
-            require(buf < data - bgn, "LCTSHandlerBase/incorrect-set-values");
-            end = data;
-        } else if (what == "buf") {
-            require(data < end - bgn, "LCTSHandlerBase/incorrect-set-values");
-            buf = data;
+            require(data > lockTimeBgn, "LCTSHandlerBase/not-greater-lock-bgn");
+            require(data < settleTime, "LCTSHandlerBase/not-less-settle");
+            lockTimeEnd = data;
+        } else if (what == "settleTime") {
+            require(data < 1 days, "LCTSHandlerBase/incorrect-time-in-day");
+            require(data > lockTimeEnd, "LCTSHandlerBase/not-greater-lock-end");
+            settleTime = data;
         } else revert("LCTSHandlerBase/file-unrecognized-param");
         emit File(what, data);
     }
 
     /// @notice Lock both queues
     function lock() external auth {
-        uint256 timeBgn = (block.timestamp / 1 days) * 1 days + bgn;
+        uint256 lockTimestampBgn = (block.timestamp / 1 days) * 1 days + lockTimeBgn;
+        uint256 lockTimestampEnd = (block.timestamp / 1 days) * 1 days + lockTimeEnd;
 
         require(locked == 0, "LCTSHandlerBase/already-locked");
-        require(block.timestamp >= timeBgn, "LCTSHandlerBase/lock-too-early");
-        require(block.timestamp <= timeBgn + buf, "LCTSHandlerBase/lock-too-late");
+        require(block.timestamp >= lockTimestampBgn, "LCTSHandlerBase/lock-too-early");
+        require(block.timestamp <= lockTimestampEnd, "LCTSHandlerBase/lock-too-late");
 
         depositQueue.lock();
         withdrawQueue.lock();
@@ -135,9 +138,9 @@ abstract contract LCTSHandlerBase {
 
     /// @notice Settle the current cycle
     function settle() external {
-        uint256 timeEnd = (block.timestamp / 1 days) * 1 days + end;
+        uint256 settleTimestamp = (block.timestamp / 1 days) * 1 days + settleTime;
         require(locked == 1, "LCTSHandlerBase/not-locked");
-        require(block.timestamp >= timeEnd, "LCTSHandlerBase/settle-too-early");
+        require(block.timestamp >= settleTimestamp, "LCTSHandlerBase/settle-too-early");
 
         _settle();
 

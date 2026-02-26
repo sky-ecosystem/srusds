@@ -56,9 +56,9 @@ interface LCTSQueueLike {
 }
 
 struct SrUsdsConfig {
-    uint256   handlerBgn;
-    uint256   handlerEnd;
-    uint256   handlerBuf;
+    uint256   handlerLockTimeBgn;
+    uint256   handlerLockTimeEnd;
+    uint256   handlerSettleTime;
     uint256   beamMaxMint;
     uint256   beamMaxCut;
     uint256   beamMaxDepositCapacity;
@@ -116,9 +116,9 @@ library SrUsdsInit {
         SrUsdsLike(instance.srUsds).rely(instance.withdrawQueue);
 
         // --- Configure Handler ---
-        HandlerLike(instance.handler).file("end", cfg.handlerEnd);
-        HandlerLike(instance.handler).file("bgn", cfg.handlerBgn);
-        HandlerLike(instance.handler).file("buf", cfg.handlerBuf);
+        HandlerLike(instance.handler).file("settleTime",  cfg.handlerSettleTime);
+        HandlerLike(instance.handler).file("lockTimeEnd", cfg.handlerLockTimeEnd);
+        HandlerLike(instance.handler).file("lockTimeBgn", cfg.handlerLockTimeBgn);
         HandlerLike(instance.handler).rely(instance.beam);
         HandlerLike(instance.handler).rely(instance.mom);
 

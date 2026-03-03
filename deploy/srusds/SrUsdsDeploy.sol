@@ -45,8 +45,8 @@ library SrUsdsDeploy {
         ScriptTools.switchOwner(_srUsds, deployer, owner);
 
         // 2. Deploy LCTS queues
-        // DepositQueue: sUSDS -> srUSDS (underlying=susds, vault=srusds)
-        address _depositQueue = address(new LCTSDepositQueue(susds, _srUsds));
+        // DepositQueue: sUSDS -> srUSDS (vault=srusds)
+        address _depositQueue = address(new LCTSDepositQueue(_srUsds));
         ScriptTools.switchOwner(_depositQueue, deployer, owner);
 
         // WithdrawQueue: srUSDS -> sUSDS (vault=srusds)

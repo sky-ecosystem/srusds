@@ -27,40 +27,39 @@ interface IERC20 {
     function approve(address spender, uint256 amount) external returns (bool);
 }
 
-interface IERC4626 {
+interface IERC4626 is IERC20 {
     function asset() external view returns (address);
     function deposit(uint256 assets, address receiver) external returns (uint256 shares);
 }
 
 /// @title LCTSDepositQueue
-/// @notice LCTS queue for depositing assets into a vault (subscribe side)
+/// @notice LCTS queue for depositing assets into a vault (deposit side)
 /// @dev Underlying = asset users deposit, Reward = vault shares received after conversion
 contract LCTSDepositQueue is LCTSQueueBase {
 
-    IERC20   public immutable underlying;
     IERC4626 public immutable vault;
+    IERC20   public immutable asset;
 
-    constructor(address underlying_, address vault_) {
-        underlying = IERC20(underlying_);
+    constructor(address vault_) {
         vault = IERC4626(vault_);
+        asset = IERC20(vault.asset());
 
-        require(vault.asset() == underlying_, "LCTSDepositQueue/asset-mismatch");
-        underlying.approve(vault_, type(uint256).max);
+        asset.approve(vault_, type(uint256).max);
 
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
     }
 
     function _pullUnderlying(address from, uint256 amount) internal override {
-        underlying.transferFrom(from, address(this), amount);
+        asset.transferFrom(from, address(this), amount);
     }
 
     function _pushUnderlying(address to, uint256 amount) internal override {
-        underlying.transfer(to, amount);
+        asset.transfer(to, amount);
     }
 
     function _pushReward(address to, uint256 amount) internal override {
-        IERC20(address(vault)).transfer(to, amount);
+        vault.transfer(to, amount);
     }
 
     function _convert(uint256 amount) internal override returns (uint256) {

@@ -95,12 +95,12 @@ library SrUsdsInit {
         require(LCTSMomLike(instance.mom).handler() == instance.handler, "SrUsdsInit/mom-handler-mismatch");
 
         // --- Validate DepositQueue ---
-        require(LCTSQueueLike(instance.depositQueue).underlying() == dss.chainlog.getAddress("SUSDS"), "SrUsdsInit/depositQueue-underlying-mismatch");
         require(LCTSQueueLike(instance.depositQueue).vault() == instance.srUsds, "SrUsdsInit/depositQueue-vault-mismatch");
+        require(LCTSQueueLike(instance.depositQueue).asset() == dss.chainlog.getAddress("SUSDS"), "SrUsdsInit/depositQueue-underlying-mismatch");
 
         // --- Validate WithdrawQueue ---
-        require(LCTSQueueLike(instance.withdrawQueue).vault() == instance.srUsds, "SrUsdsInit/withdrawQueue-vault-mismatch");
         require(LCTSQueueLike(instance.withdrawQueue).asset() == dss.chainlog.getAddress("SUSDS"), "SrUsdsInit/withdrawQueue-asset-mismatch");
+        require(LCTSQueueLike(instance.withdrawQueue).vault() == instance.srUsds, "SrUsdsInit/withdrawQueue-vault-mismatch");
 
         // --- Configure VAT permissions ---
         dss.vat.rely(instance.handler);

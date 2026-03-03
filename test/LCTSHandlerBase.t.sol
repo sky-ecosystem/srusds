@@ -39,7 +39,7 @@ contract LCTSHandlerBaseTest is DssTest {
     function setUp() public {
         underlying = new MockERC20("Underlying", "UND");
         vault = new MockERC4626(address(underlying));
-        depositQueue = new LCTSDepositQueue(address(underlying), address(vault));
+        depositQueue = new LCTSDepositQueue(address(vault));
         withdrawQueue = new LCTSWithdrawQueue(address(vault));
         handler = new MockHandler(address(depositQueue), address(withdrawQueue));
 

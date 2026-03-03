@@ -26,13 +26,13 @@ interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
 }
 
-interface IERC4626 {
+interface IERC4626 is IERC20 {
     function asset() external view returns (address);
     function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets);
 }
 
 /// @title LCTSWithdrawQueue
-/// @notice LCTS queue for redeeming vault shares (redeem side)
+/// @notice LCTS queue for redeeming assets from a vault (redeem side)
 /// @dev Underlying = vault shares users deposit, Reward = assets received after conversion
 contract LCTSWithdrawQueue is LCTSQueueBase {
 
@@ -48,11 +48,11 @@ contract LCTSWithdrawQueue is LCTSQueueBase {
     }
 
     function _pullUnderlying(address from, uint256 amount) internal override {
-        IERC20(address(vault)).transferFrom(from, address(this), amount);
+        vault.transferFrom(from, address(this), amount);
     }
 
     function _pushUnderlying(address to, uint256 amount) internal override {
-        IERC20(address(vault)).transfer(to, amount);
+        vault.transfer(to, amount);
     }
 
     function _pushReward(address to, uint256 amount) internal override {

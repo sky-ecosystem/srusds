@@ -27,7 +27,7 @@ contract LCTSDepositQueueTest is Test {
     function setUp() public {
         underlying = new MockERC20("Underlying", "UND");
         vault = new MockERC4626(address(underlying));
-        queue = new LCTSDepositQueue(address(underlying), address(vault));
+        queue = new LCTSDepositQueue(address(vault));
 
         // Test contract is the operator (already authed in constructor)
         // Approve queue to pull from test contract

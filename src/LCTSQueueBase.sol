@@ -98,21 +98,21 @@ abstract contract LCTSQueueBase {
 
     /// @notice Deposit underlying assets into the queue
     /// @param amount Amount of underlying to deposit (pulled from msg.sender)
-    /// @param receiver Address to receive the queue position
-    function deposit(uint256 amount, address receiver) external auth {
+    /// @param to Address to receive the queue position
+    function deposit(uint256 amount, address to) external auth {
         require(locked == 0, "LCTSQueueBase/queue-locked");
         require(amount > 0, "LCTSQueueBase/zero-amount");
-        require(receiver != address(0), "LCTSQueueBase/zero-address");
+        require(to != address(0), "LCTSQueueBase/zero-address");
 
-        Position storage pos = positions[receiver];
+        Position storage pos = positions[to];
 
         if (pos.shares > 0) {
             if (pos.gen < currentGen) {
                 // If user has position in finalized generation, settle it first
-                _settleFinalized(receiver, receiver);
+                _settleFinalized(to, to);
             } else {
                 // If user has position in current generation, claim pending rewards
-                _claimRewards(receiver, receiver);
+                _claimRewards(to, to);
             }
         }
 
@@ -135,7 +135,7 @@ abstract contract LCTSQueueBase {
         // Transfer underlying from caller
         _pullUnderlying(msg.sender, amount);
 
-        emit Deposit(receiver, currentGen, amount, shares);
+        emit Deposit(to, currentGen, amount, shares);
     }
 
     /// @notice Claim accrued rewards for a user

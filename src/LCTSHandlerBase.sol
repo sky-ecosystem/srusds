@@ -43,8 +43,8 @@ abstract contract LCTSHandlerBase {
 
     // --- Immutables ---
 
-    LCTSQueueLike public immutable depositQueue;
-    LCTSQueueLike public immutable withdrawQueue;
+    address public immutable depositQueue;
+    address public immutable withdrawQueue;
 
     // --- Events ---
 
@@ -65,8 +65,8 @@ abstract contract LCTSHandlerBase {
     // --- Constructor ---
 
     constructor(address depositQueue_, address withdrawQueue_) {
-        depositQueue  = LCTSQueueLike(depositQueue_);
-        withdrawQueue = LCTSQueueLike(withdrawQueue_);
+        depositQueue  = depositQueue_;
+        withdrawQueue = withdrawQueue_;
 
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
@@ -111,8 +111,8 @@ abstract contract LCTSHandlerBase {
         require(block.timestamp >= lockTimestampBgn, "LCTSHandlerBase/lock-too-early");
         require(block.timestamp <= lockTimestampEnd, "LCTSHandlerBase/lock-too-late");
 
-        depositQueue.lock();
-        withdrawQueue.lock();
+        LCTSQueueLike(depositQueue).lock();
+        LCTSQueueLike(withdrawQueue).lock();
         locked = 1;
 
         emit Lock();
@@ -145,8 +145,8 @@ abstract contract LCTSHandlerBase {
         _settle();
 
         // Process LCTS queues
-        uint256 depositsConverted  = depositQueue.settle(depositCapacity);
-        uint256 withdrawsConverted = withdrawQueue.settle(withdrawCapacity);
+        uint256 depositsConverted  = LCTSQueueLike(depositQueue).settle(depositCapacity);
+        uint256 withdrawsConverted = LCTSQueueLike(withdrawQueue).settle(withdrawCapacity);
 
         // Reset settlement params
         locked           = 0;

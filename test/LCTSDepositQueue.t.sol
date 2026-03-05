@@ -19,10 +19,10 @@ contract LCTSDepositQueueTest is Test {
 
     event Rely(address indexed usr);
     event Deny(address indexed usr);
-    event Deposit(address indexed user, uint256 indexed gen, uint256 assets, uint256 shares);
-    event Claim(address indexed user, uint256 indexed gen, uint256 vaultShares, address indexed to);
-    event Exit(address indexed user, uint256 indexed gen, uint256 assets, uint256 vaultShares, address indexed to);
-    event Settle(uint256 indexed gen, uint256 capacity, uint256 converted, uint256 vaultSharesMinted, bool finalized);
+    event Deposit(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, uint256 underlying, uint256 shares);
+    event Claim(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards);
+    event Exit(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, address underlyingTo, uint256 underlying);
+    event Settle(uint256 indexed gen, uint256 capacity, uint256 converted, uint256 received, bool finalized);
 
     function setUp() public {
         underlying = new MockERC20("Underlying", "UND");
@@ -40,7 +40,7 @@ contract LCTSDepositQueueTest is Test {
     // Helper to deposit as operator on behalf of a user
     function _deposit(uint256 amount, address receiver) internal {
         underlying.mint(address(this), amount);
-        queue.deposit(amount, receiver);
+        queue.claimAndDeposit(receiver, receiver, amount);
     }
 
     // Helper to lock and settle
@@ -90,7 +90,7 @@ contract LCTSDepositQueueTest is Test {
 
         vm.expectRevert("LCTSQueueBase/not-authorized");
         vm.prank(unauthorized);
-        queue.deposit(100e18, unauthorized);
+        queue.claimAndDeposit(unauthorized, unauthorized, 100e18);
     }
 
     function testUnauthorizedClaimReverts() public {
@@ -107,7 +107,7 @@ contract LCTSDepositQueueTest is Test {
 
         vm.expectRevert("LCTSQueueBase/not-authorized");
         vm.prank(alice);
-        queue.claimAndExit(alice, alice);
+        queue.claimAndExit(alice, alice, alice);
     }
 
     // --- Deposit Tests ---
@@ -116,10 +116,10 @@ contract LCTSDepositQueueTest is Test {
         underlying.mint(address(this), 100e18);
 
         vm.expectEmit(true, true, true, true);
-        emit Deposit(alice, 0, 100e18, 100e18);
-        queue.deposit(100e18, alice);
+        emit Deposit(alice, 0, alice, 0, 100e18, 100e18);
+        queue.claimAndDeposit(alice, alice, 100e18);
 
-        (uint256 gen, uint256 shares, uint256 rewardDebt) = queue.getPosition(alice);
+        (uint256 gen, uint256 shares, uint256 rewardDebt) = queue.positions(alice);
         assertEq(gen, 0);
         assertEq(shares, 100e18);
         assertEq(rewardDebt, 0);
@@ -130,24 +130,24 @@ contract LCTSDepositQueueTest is Test {
     function testDepositToReceiver() public {
         _deposit(100e18, bob);
 
-        (uint256 gen, uint256 shares, ) = queue.getPosition(bob);
+        (uint256 gen, uint256 shares, ) = queue.positions(bob);
         assertEq(gen, 0);
         assertEq(shares, 100e18);
 
         // Alice should have no position
-        (,uint256 aliceShares,) = queue.getPosition(alice);
+        (,uint256 aliceShares,) = queue.positions(alice);
         assertEq(aliceShares, 0);
     }
 
     function testDepositZeroReverts() public {
-        vm.expectRevert("LCTSQueueBase/zero-amount");
-        queue.deposit(0, alice);
+        vm.expectRevert("LCTSQueueBase/zero-underlyingAmt");
+        queue.claimAndDeposit(alice, alice, 0);
     }
 
     function testDepositZeroAddressReverts() public {
         underlying.mint(address(this), 100e18);
-        vm.expectRevert("LCTSQueueBase/zero-address");
-        queue.deposit(100e18, address(0));
+        vm.expectRevert("LCTSQueueBase/owner-zero-address");
+        queue.claimAndDeposit(address(0), address(0), 100e18);
     }
 
     function testMultipleDeposits() public {
@@ -157,8 +157,8 @@ contract LCTSDepositQueueTest is Test {
         assertEq(queue.totalUnderlying(), 300e18);
         assertEq(queue.totalShares(), 300e18);
 
-        (,uint256 aliceShares,) = queue.getPosition(alice);
-        (,uint256 bobShares,) = queue.getPosition(bob);
+        (,uint256 aliceShares,) = queue.positions(alice);
+        (,uint256 bobShares,) = queue.positions(bob);
         assertEq(aliceShares, 100e18);
         assertEq(bobShares, 200e18);
     }
@@ -173,7 +173,7 @@ contract LCTSDepositQueueTest is Test {
         _deposit(50e18, bob);
 
         // Bob should get proportional shares
-        (,uint256 bobShares,) = queue.getPosition(bob);
+        (,uint256 bobShares,) = queue.positions(bob);
         assertEq(bobShares, 100e18); // 50 assets * 100 shares / 50 underlying = 100 shares
     }
 
@@ -243,7 +243,7 @@ contract LCTSDepositQueueTest is Test {
         assertEq(pending, 50e18);
 
         vm.expectEmit(true, true, true, true);
-        emit Claim(alice, 0, 50e18, alice);
+        emit Claim(alice, 0, alice, 50e18);
         uint256 claimed = queue.claim(alice, alice);
 
         assertEq(claimed, 50e18);
@@ -263,9 +263,9 @@ contract LCTSDepositQueueTest is Test {
         assertEq(claimed, 100e18);
         assertEq(vault.balanceOf(alice), 100e18);
 
-        // Position should be cleared
-        (,uint256 shares,) = queue.getPosition(alice);
-        assertEq(shares, 0);
+        // Position shares remain (claim no longer clears finalized positions)
+        (,uint256 shares,) = queue.positions(alice);
+        assertEq(shares, 100e18);
     }
 
     function testClaimToAddress() public {
@@ -291,15 +291,15 @@ contract LCTSDepositQueueTest is Test {
 
         _settle(50e18);
 
-        (uint256 assets, uint256 vaultShares) = queue.claimAndExit(alice, alice);
+        (uint256 rewardsAmt, uint256 underlyingAmt) = queue.claimAndExit(alice, alice, alice);
 
-        assertEq(assets, 50e18); // Remaining underlying
-        assertEq(vaultShares, 50e18); // Claimed vault shares
+        assertEq(rewardsAmt, 50e18); // Claimed vault shares
+        assertEq(underlyingAmt, 50e18); // Remaining underlying
         assertEq(underlying.balanceOf(alice), 50e18);
         assertEq(vault.balanceOf(alice), 50e18);
 
         // Position should be cleared
-        (,uint256 shares,) = queue.getPosition(alice);
+        (,uint256 shares,) = queue.positions(alice);
         assertEq(shares, 0);
         assertEq(queue.totalShares(), 0);
         assertEq(queue.totalUnderlying(), 0);
@@ -311,7 +311,7 @@ contract LCTSDepositQueueTest is Test {
         _settle(100e18); // Finalize
 
         vm.expectRevert("LCTSQueueBase/not-current-gen");
-        queue.claimAndExit(alice, alice);
+        queue.claimAndExit(alice, alice, alice);
     }
 
     function testClaimAndExitToAddress() public {
@@ -319,7 +319,7 @@ contract LCTSDepositQueueTest is Test {
 
         _settle(50e18);
 
-        queue.claimAndExit(alice, bob);
+        queue.claimAndExit(alice, bob, bob);
 
         assertEq(underlying.balanceOf(bob), 50e18);
         assertEq(vault.balanceOf(bob), 50e18);
@@ -368,7 +368,7 @@ contract LCTSDepositQueueTest is Test {
         // New deposit goes to gen 1
         _deposit(100e18, bob);
 
-        (uint256 gen,,) = queue.getPosition(bob);
+        (uint256 gen,,) = queue.positions(bob);
         assertEq(gen, 1);
     }
 
@@ -381,7 +381,7 @@ contract LCTSDepositQueueTest is Test {
         _deposit(50e18, alice);
 
         assertEq(vault.balanceOf(alice), 100e18); // Claimed from finalized
-        (uint256 gen, uint256 shares,) = queue.getPosition(alice);
+        (uint256 gen, uint256 shares,) = queue.positions(alice);
         assertEq(gen, 1);
         assertEq(shares, 50e18);
     }
@@ -429,7 +429,7 @@ contract LCTSDepositQueueTest is Test {
 
         underlying.mint(address(this), 100e18);
         vm.expectRevert("LCTSQueueBase/queue-locked");
-        queue.deposit(100e18, alice);
+        queue.claimAndDeposit(alice, alice, 100e18);
     }
 
     function testClaimCurrentGenWhileLockedReverts() public {
@@ -460,7 +460,7 @@ contract LCTSDepositQueueTest is Test {
         queue.lock();
 
         vm.expectRevert("LCTSQueueBase/queue-locked");
-        queue.claimAndExit(alice, alice);
+        queue.claimAndExit(alice, alice, alice);
     }
 
     function testLockAlreadyLockedReverts() public {
@@ -492,7 +492,7 @@ contract LCTSDepositQueueTest is Test {
         assertEq(vault.balanceOf(alice), 50e18); // Rewards auto-claimed
         assertEq(queue.pendingRewards(alice), 0);
 
-        (uint256 gen, uint256 shares,) = queue.getPosition(alice);
+        (uint256 gen, uint256 shares,) = queue.positions(alice);
         assertEq(gen, 0);
         assertEq(shares, 200e18); // 100 original + 100 new (50 assets * 100 shares / 50 underlying)
     }
@@ -503,20 +503,20 @@ contract LCTSDepositQueueTest is Test {
         _deposit(100e18, alice);
         _settle(50e18);
 
-        vm.expectRevert("LCTSQueueBase/zero-address");
+        vm.expectRevert("LCTSQueueBase/rewardsTo-zero-address");
         queue.claim(alice, address(0));
     }
 
     function testClaimAndExitToZeroAddressReverts() public {
         _deposit(100e18, alice);
 
-        vm.expectRevert("LCTSQueueBase/zero-address");
-        queue.claimAndExit(alice, address(0));
+        vm.expectRevert("LCTSQueueBase/rewards-zero-address");
+        queue.claimAndExit(alice, address(0), alice);
     }
 
     function testClaimAndExitNoPositionReverts() public {
-        vm.expectRevert("LCTSQueueBase/no-position");
-        queue.claimAndExit(alice, alice);
+        vm.expectRevert("LCTSQueueBase/zero-shares");
+        queue.claimAndExit(alice, alice, alice);
     }
 
     // --- Last User Exit Advances Generation ---
@@ -528,11 +528,11 @@ contract LCTSDepositQueueTest is Test {
         _settle(50e18);
 
         // Alice exits — not last, gen should stay
-        queue.claimAndExit(alice, alice);
+        queue.claimAndExit(alice, alice, alice);
         assertEq(queue.currentGen(), 0);
 
         // Bob exits — last user, gen should advance
-        queue.claimAndExit(bob, bob);
+        queue.claimAndExit(bob, bob, bob);
         assertEq(queue.currentGen(), 1);
         assertEq(queue.totalShares(), 0);
         assertEq(queue.totalUnderlying(), 0);
@@ -623,10 +623,10 @@ contract LCTSWithdrawQueueTest is Test {
 
     event Rely(address indexed usr);
     event Deny(address indexed usr);
-    event Deposit(address indexed user, uint256 indexed gen, uint256 vaultShares, uint256 shares);
-    event Claim(address indexed user, uint256 indexed gen, uint256 assets, address indexed to);
-    event Exit(address indexed user, uint256 indexed gen, uint256 vaultShares, uint256 assets, address indexed to);
-    event Settle(uint256 indexed gen, uint256 capacity, uint256 redeemed, uint256 assetsReceived, bool finalized);
+    event Deposit(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, uint256 underlying, uint256 shares);
+    event Claim(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards);
+    event Exit(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, address underlyingTo, uint256 underlying);
+    event Settle(uint256 indexed gen, uint256 capacity, uint256 converted, uint256 received, bool finalized);
 
     function setUp() public {
         underlying = new MockERC20("Underlying", "UND");
@@ -644,7 +644,7 @@ contract LCTSWithdrawQueueTest is Test {
     // Helper to deposit vault shares as operator on behalf of a user
     function _deposit(uint256 vaultShares, address receiver) internal {
         vault.mint(address(this), vaultShares);
-        queue.deposit(vaultShares, receiver);
+        queue.claimAndDeposit(receiver, receiver, vaultShares);
     }
 
     // Helper to lock and settle
@@ -678,7 +678,7 @@ contract LCTSWithdrawQueueTest is Test {
 
         vm.expectRevert("LCTSQueueBase/not-authorized");
         vm.prank(unauthorized);
-        queue.deposit(100e18, unauthorized);
+        queue.claimAndDeposit(unauthorized, unauthorized, 100e18);
     }
 
     function testUnauthorizedClaimReverts() public {
@@ -695,7 +695,7 @@ contract LCTSWithdrawQueueTest is Test {
 
         vm.expectRevert("LCTSQueueBase/not-authorized");
         vm.prank(alice);
-        queue.claimAndExit(alice, alice);
+        queue.claimAndExit(alice, alice, alice);
     }
 
     // --- Deposit Tests ---
@@ -704,10 +704,10 @@ contract LCTSWithdrawQueueTest is Test {
         vault.mint(address(this), 100e18);
 
         vm.expectEmit(true, true, true, true);
-        emit Deposit(alice, 0, 100e18, 100e18);
-        queue.deposit(100e18, alice);
+        emit Deposit(alice, 0, alice, 0, 100e18, 100e18);
+        queue.claimAndDeposit(alice, alice, 100e18);
 
-        (uint256 gen, uint256 shares, uint256 rewardDebt) = queue.getPosition(alice);
+        (uint256 gen, uint256 shares, uint256 rewardDebt) = queue.positions(alice);
         assertEq(gen, 0);
         assertEq(shares, 100e18);
         assertEq(rewardDebt, 0);
@@ -715,14 +715,14 @@ contract LCTSWithdrawQueueTest is Test {
     }
 
     function testDepositZeroReverts() public {
-        vm.expectRevert("LCTSQueueBase/zero-amount");
-        queue.deposit(0, alice);
+        vm.expectRevert("LCTSQueueBase/zero-underlyingAmt");
+        queue.claimAndDeposit(alice, alice, 0);
     }
 
     function testDepositZeroAddressReverts() public {
         vault.mint(address(this), 100e18);
-        vm.expectRevert("LCTSQueueBase/zero-address");
-        queue.deposit(100e18, address(0));
+        vm.expectRevert("LCTSQueueBase/owner-zero-address");
+        queue.claimAndDeposit(address(0), address(0), 100e18);
     }
 
     // --- Settle Tests ---
@@ -799,10 +799,10 @@ contract LCTSWithdrawQueueTest is Test {
 
         _settle(50e18);
 
-        (uint256 vaultShares, uint256 assets) = queue.claimAndExit(alice, alice);
+        (uint256 rewardsAmt, uint256 underlyingAmt) = queue.claimAndExit(alice, alice, alice);
 
-        assertEq(vaultShares, 50e18); // Returned vault shares
-        assertEq(assets, 50e18); // Claimed underlying
+        assertEq(rewardsAmt, 50e18); // Claimed underlying
+        assertEq(underlyingAmt, 50e18); // Returned vault shares
         assertEq(vault.balanceOf(alice), 50e18);
         assertEq(underlying.balanceOf(alice), 50e18);
     }
@@ -813,7 +813,7 @@ contract LCTSWithdrawQueueTest is Test {
         _settle(100e18);
 
         vm.expectRevert("LCTSQueueBase/not-current-gen");
-        queue.claimAndExit(alice, alice);
+        queue.claimAndExit(alice, alice, alice);
     }
 
     function testClaimAndExitToAddress() public {
@@ -821,7 +821,7 @@ contract LCTSWithdrawQueueTest is Test {
 
         _settle(50e18);
 
-        queue.claimAndExit(alice, bob);
+        queue.claimAndExit(alice, bob, bob);
 
         assertEq(vault.balanceOf(bob), 50e18);
         assertEq(underlying.balanceOf(bob), 50e18);

@@ -46,9 +46,9 @@ interface UsdsLike {
 }
 
 interface LCTSQueueLike {
-    function deposit(uint256, address) external;
+    function claimAndDeposit(address, address, uint256) external returns (uint256);
+    function claimAndExit(address, address, address) external returns (uint256, uint256);
     function claim(address, address) external returns (uint256);
-    function claimAndExit(address, address) external returns (uint256, uint256);
 }
 
 interface UsdsJoinLike {
@@ -130,54 +130,60 @@ contract SrUsdsHandler is LCTSHandlerBase {
 
     // --- Deposit Queue User Functions ---
 
-    function depositUsds(uint256 usdsAmt, address receiver) external {
+    function claimSrUsdsAndDepositSusds(address rewardsTo, uint256 susdsAmt) external returns (uint256 srUsdsAmt) {
+        susds.transferFrom(msg.sender, address(this), susdsAmt);
+        srUsdsAmt = LCTSQueueLike(depositQueue).claimAndDeposit(msg.sender, rewardsTo, susdsAmt);
+    }
+
+    function claimSrUsdsAndDepositUsds(address rewardsTo, uint256 usdsAmt) external returns (uint256 srUsdsAmt) {
         usds.transferFrom(msg.sender, address(this), usdsAmt);
         uint256 susdsAmt = susds.deposit(usdsAmt, address(this));
-        LCTSQueueLike(depositQueue).deposit(susdsAmt, receiver);
+        srUsdsAmt = LCTSQueueLike(depositQueue).claimAndDeposit(msg.sender, rewardsTo, susdsAmt);
     }
 
-    function depositSusds(uint256 susdsAmt, address receiver) external {
-        susds.transferFrom(msg.sender, address(this), susdsAmt);
-        LCTSQueueLike(depositQueue).deposit(susdsAmt, receiver);
+    function claimSrUsdsAndExitSusds(address rewardsTo, address underlyingTo) external returns (uint256 srUsdsAmt, uint256 sUsdsAmt) {
+        (srUsdsAmt, sUsdsAmt) = LCTSQueueLike(depositQueue).claimAndExit(msg.sender, rewardsTo, underlyingTo);
     }
 
-    function claimSrUsds(address to) external {
-        LCTSQueueLike(depositQueue).claim(msg.sender, to);
+    function claimSrUsdsAndExitUsds(address rewardsTo, address underlyingTo) external returns (uint256 srUsdsAmt, uint256 usdsAmt) {
+        uint256 sUsdsAmt;
+        (srUsdsAmt, sUsdsAmt) = LCTSQueueLike(depositQueue).claimAndExit(msg.sender, rewardsTo, address(this));
+        if (sUsdsAmt > 0) usdsAmt = susds.redeem(sUsdsAmt, underlyingTo, address(this));
     }
 
-    function claimSrUsdsAndExitSusds(address to) external {
-        LCTSQueueLike(depositQueue).claimAndExit(msg.sender, to);
-    }
-
-    function claimSrUsdsAndExitUsds(address to) external {
-        (uint256 susdsOut, uint256 srUsdsOut) = LCTSQueueLike(depositQueue).claimAndExit(msg.sender, address(this));
-        if (susdsOut  > 0) susds.redeem(susdsOut, to, address(this));
-        if (srUsdsOut > 0) srusds.transfer(to, srUsdsOut);
+    function claimSrUsds(address rewardsTo) external returns (uint256 srUsdsAmt) {
+        srUsdsAmt = LCTSQueueLike(depositQueue).claim(msg.sender, rewardsTo);
     }
 
     // --- Withdraw Queue User Functions ---
 
-    function depositSrUsds(uint256 srUsdsAmt, address to) external {
+    function claimSUsdsAndDepositSrUsds(address rewardsTo, uint256 srUsdsAmt) external returns (uint256 sUsdsAmt) {
         srusds.transferFrom(msg.sender, address(this), srUsdsAmt);
-        LCTSQueueLike(withdrawQueue).deposit(srUsdsAmt, to);
+        sUsdsAmt = LCTSQueueLike(withdrawQueue).claimAndDeposit(msg.sender, rewardsTo, srUsdsAmt);
     }
 
-    function claimSusds(address to) external {
-        LCTSQueueLike(withdrawQueue).claim(msg.sender, to);
+    function claimUsdsAndDepositSrUsds(address rewardsTo, uint256 srUsdsAmt) external returns (uint256 usdsAmt) {
+        srusds.transferFrom(msg.sender, address(this), srUsdsAmt);
+        uint256 sUsdsAmt = LCTSQueueLike(withdrawQueue).claimAndDeposit(msg.sender, address(this), srUsdsAmt);
+        if (sUsdsAmt > 0) usdsAmt = susds.redeem(sUsdsAmt, rewardsTo, address(this));
     }
 
-    function claimUsds(address to) external {
-        uint256 susdsOut = LCTSQueueLike(withdrawQueue).claim(msg.sender, address(this));
-        if (susdsOut > 0) susds.redeem(susdsOut, to, address(this));
+    function claimSUsdsAndExitSrUsds(address rewardsTo, address underlyingTo) external returns (uint256 sUsdsAmt, uint256 srUsdsAmt) {
+        (sUsdsAmt, srUsdsAmt) = LCTSQueueLike(withdrawQueue).claimAndExit(msg.sender, rewardsTo, underlyingTo);
     }
 
-    function claimSusdsAndExitSrUsds(address to) external {
-        LCTSQueueLike(withdrawQueue).claimAndExit(msg.sender, to);
+    function claimUsdsAndExitSrUsds(address rewardsTo, address underlyingTo) external returns (uint256 usdsAmt, uint256 srUsdsAmt)  {
+        uint256 sUsdsAmt;
+        (sUsdsAmt, srUsdsAmt) = LCTSQueueLike(withdrawQueue).claimAndExit(msg.sender, address(this), underlyingTo);
+        if (sUsdsAmt  > 0) usdsAmt = susds.redeem(sUsdsAmt, rewardsTo, address(this));
     }
 
-    function claimUsdsAndExitSrUsds(address to) external {
-        (uint256 srUsdsOut, uint256 susdsOut) = LCTSQueueLike(withdrawQueue).claimAndExit(msg.sender, address(this));
-        if (susdsOut  > 0) susds.redeem(susdsOut, to, address(this));
-        if (srUsdsOut > 0) srusds.transfer(to, srUsdsOut);
+    function claimSUsds(address rewardsTo) external returns (uint256 sUsdsAmt) {
+        sUsdsAmt = LCTSQueueLike(withdrawQueue).claim(msg.sender, rewardsTo);
+    }
+
+    function claimUsds(address rewardsTo) external returns (uint256 usdsAmt) {
+        uint256 sUsdsAmt = LCTSQueueLike(withdrawQueue).claim(msg.sender, address(this));
+        if (sUsdsAmt > 0) usdsAmt = susds.redeem(sUsdsAmt, rewardsTo, address(this));
     }
 }

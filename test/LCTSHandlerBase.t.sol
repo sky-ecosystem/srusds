@@ -72,14 +72,14 @@ contract LCTSHandlerBaseTest is DssTest {
     function _seedDepositQueue(uint256 amount) internal {
         underlying.mint(address(this), amount);
         underlying.approve(address(depositQueue), amount);
-        depositQueue.deposit(amount, alice);
+        depositQueue.claimAndDeposit(alice, alice, amount);
     }
 
     // Helper: seed withdraw queue with vault shares
     function _seedWithdrawQueue(uint256 amount) internal {
         vault.mint(address(this), amount);
         vault.approve(address(withdrawQueue), amount);
-        withdrawQueue.deposit(amount, alice);
+        withdrawQueue.claimAndDeposit(alice, alice, amount);
     }
 
     // Helper: full lock -> plan -> settle cycle

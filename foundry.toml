@@ -6,6 +6,9 @@ solc = "0.8.21"
 optimizer = true
 optimizer_runs = 200
 
+[lint]
+lint_on_build = false
+
 invariant.runs = 1
 invariant.depth = 100
 invariant.preserve_state = true # For using cheats in handlers (https://github.com/foundry-rs/foundry/pull/7219)

@@ -27,14 +27,6 @@ pragma solidity ^0.8.21;
 ///      share proportionally in the conversion capacity allocated to that generation.
 abstract contract LCTSQueueBase {
 
-    // --- Types ---
-
-    struct Position {
-        uint256 gen;        // Generation this position belongs to
-        uint256 shares;     // Number of internal shares held
-        uint256 rewardDebt; // rewardPerToken snapshot at entry [wad]
-    }
-
     // --- Storage Variables ---
 
     mapping(address => uint256) public wards;
@@ -47,6 +39,12 @@ abstract contract LCTSQueueBase {
     mapping(uint256 gen => uint256) public rewardPerToken; // Cumulative reward per internal share [wad]
     mapping(address => Position) public positions;
 
+    struct Position {
+        uint256 gen;        // Generation this position belongs to
+        uint256 shares;     // Number of internal shares held
+        uint256 rewardDebt; // rewardPerToken snapshot at entry [wad]
+    }
+
     // --- Constants ---
 
     uint256 constant WAD = 10 ** 18;
@@ -55,10 +53,10 @@ abstract contract LCTSQueueBase {
 
     event Rely(address indexed usr);
     event Deny(address indexed usr);
-    event Deposit(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, uint256 underlying, uint256 shares);
-    event Claim(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards);
-    event Exit(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, address underlyingTo, uint256 underlying);
     event Lock(uint256 indexed gen);
+    event Claim(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards);
+    event Deposit(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, uint256 underlying, uint256 shares);
+    event Exit(address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, address underlyingTo, uint256 underlying);
     event Settle(uint256 indexed gen, uint256 capacity, uint256 converted, uint256 received, bool finalized);
 
     // --- Modifiers ---
@@ -106,7 +104,7 @@ abstract contract LCTSQueueBase {
     }
 
     /// @notice Claim accrued rewards and deposit underlying assets into the queue
-    /// @param owner Address to receive the queue position
+    /// @param owner Address to credit the deposit
     /// @param underlyingAmt Amount of underlying to deposit (pulled from msg.sender)
     /// @param rewardsTo Address to receive rewards
     /// @return rewardsAmt Amount of rewards claimed
@@ -168,9 +166,8 @@ abstract contract LCTSQueueBase {
         totalUnderlying -= underlyingAmt;
         totalShares -= pos.shares;
 
-        // Clear position
+        // Clear shares
         pos.shares = 0;
-        pos.rewardDebt = 0;
 
         // If last owner exits, advance generation
         if (totalShares == 0) {

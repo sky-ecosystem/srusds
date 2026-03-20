@@ -46,7 +46,7 @@ interface UsdsLike {
 }
 
 interface LCTSQueueLike {
-    function claimAndDeposit(address, address, uint256) external returns (uint256);
+    function claimAndJoin(address, address, uint256) external returns (uint256);
     function claimAndExit(address, address, address) external returns (uint256, uint256);
     function claim(address, address) external returns (uint256);
 }
@@ -130,15 +130,15 @@ contract SrUsdsHandler is LCTSHandlerBase {
 
     // --- Deposit Queue User Functions ---
 
-    function claimSrUsdsAndDepositSusds(address rewardsTo, uint256 susdsAmt) external returns (uint256 srUsdsAmt) {
+    function claimSrUsdsAndJoinSusds(address rewardsTo, uint256 susdsAmt) external returns (uint256 srUsdsAmt) {
         susds.transferFrom(msg.sender, address(this), susdsAmt);
-        srUsdsAmt = LCTSQueueLike(depositQueue).claimAndDeposit(msg.sender, rewardsTo, susdsAmt);
+        srUsdsAmt = LCTSQueueLike(depositQueue).claimAndJoin(msg.sender, rewardsTo, susdsAmt);
     }
 
-    function claimSrUsdsAndDepositUsds(address rewardsTo, uint256 usdsAmt) external returns (uint256 srUsdsAmt) {
+    function claimSrUsdsAndJoinUsds(address rewardsTo, uint256 usdsAmt) external returns (uint256 srUsdsAmt) {
         usds.transferFrom(msg.sender, address(this), usdsAmt);
         uint256 susdsAmt = susds.deposit(usdsAmt, address(this));
-        srUsdsAmt = LCTSQueueLike(depositQueue).claimAndDeposit(msg.sender, rewardsTo, susdsAmt);
+        srUsdsAmt = LCTSQueueLike(depositQueue).claimAndJoin(msg.sender, rewardsTo, susdsAmt);
     }
 
     function claimSrUsdsAndExitSusds(address rewardsTo, address underlyingTo) external returns (uint256 srUsdsAmt, uint256 sUsdsAmt) {
@@ -157,14 +157,14 @@ contract SrUsdsHandler is LCTSHandlerBase {
 
     // --- Withdraw Queue User Functions ---
 
-    function claimSUsdsAndDepositSrUsds(address rewardsTo, uint256 srUsdsAmt) external returns (uint256 sUsdsAmt) {
+    function claimSUsdsAndJoinSrUsds(address rewardsTo, uint256 srUsdsAmt) external returns (uint256 sUsdsAmt) {
         srusds.transferFrom(msg.sender, address(this), srUsdsAmt);
-        sUsdsAmt = LCTSQueueLike(withdrawQueue).claimAndDeposit(msg.sender, rewardsTo, srUsdsAmt);
+        sUsdsAmt = LCTSQueueLike(withdrawQueue).claimAndJoin(msg.sender, rewardsTo, srUsdsAmt);
     }
 
-    function claimUsdsAndDepositSrUsds(address rewardsTo, uint256 srUsdsAmt) external returns (uint256 usdsAmt) {
+    function claimUsdsAndJoinSrUsds(address rewardsTo, uint256 srUsdsAmt) external returns (uint256 usdsAmt) {
         srusds.transferFrom(msg.sender, address(this), srUsdsAmt);
-        uint256 sUsdsAmt = LCTSQueueLike(withdrawQueue).claimAndDeposit(msg.sender, address(this), srUsdsAmt);
+        uint256 sUsdsAmt = LCTSQueueLike(withdrawQueue).claimAndJoin(msg.sender, address(this), srUsdsAmt);
         if (sUsdsAmt > 0) usdsAmt = susds.redeem(sUsdsAmt, rewardsTo, address(this));
     }
 

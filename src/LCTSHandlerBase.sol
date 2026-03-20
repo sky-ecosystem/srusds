@@ -104,10 +104,9 @@ abstract contract LCTSHandlerBase {
 
     /// @notice Lock both queues
     function lock() external auth {
+        require(locked == 0, "LCTSHandlerBase/already-locked");
         uint256 lockTimestampBgn = (block.timestamp / 1 days) * 1 days + lockTimeBgn;
         uint256 lockTimestampEnd = (block.timestamp / 1 days) * 1 days + lockTimeEnd;
-
-        require(locked == 0, "LCTSHandlerBase/already-locked");
         require(block.timestamp >= lockTimestampBgn, "LCTSHandlerBase/lock-too-early");
         require(block.timestamp <= lockTimestampEnd, "LCTSHandlerBase/lock-too-late");
 

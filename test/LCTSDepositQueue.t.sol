@@ -40,7 +40,7 @@ contract LCTSDepositQueueTest is Test {
     // Helper to deposit as operator on behalf of a user
     function _deposit(uint256 amount, address receiver) internal {
         underlying.mint(address(this), amount);
-        queue.claimAndDeposit(receiver, receiver, amount);
+        queue.claimAndJoin(receiver, receiver, amount);
     }
 
     // Helper to lock and settle
@@ -90,7 +90,7 @@ contract LCTSDepositQueueTest is Test {
 
         vm.expectRevert("LCTSQueueBase/not-authorized");
         vm.prank(unauthorized);
-        queue.claimAndDeposit(unauthorized, unauthorized, 100e18);
+        queue.claimAndJoin(unauthorized, unauthorized, 100e18);
     }
 
     function testUnauthorizedClaimReverts() public {
@@ -117,7 +117,7 @@ contract LCTSDepositQueueTest is Test {
 
         vm.expectEmit(true, true, true, true);
         emit Deposit(alice, 0, alice, 0, 100e18, 100e18);
-        queue.claimAndDeposit(alice, alice, 100e18);
+        queue.claimAndJoin(alice, alice, 100e18);
 
         (uint256 gen, uint256 shares, uint256 rewardDebt) = queue.positions(alice);
         assertEq(gen, 0);
@@ -141,13 +141,13 @@ contract LCTSDepositQueueTest is Test {
 
     function testDepositZeroReverts() public {
         vm.expectRevert("LCTSQueueBase/zero-underlyingAmt");
-        queue.claimAndDeposit(alice, alice, 0);
+        queue.claimAndJoin(alice, alice, 0);
     }
 
     function testDepositZeroAddressReverts() public {
         underlying.mint(address(this), 100e18);
         vm.expectRevert("LCTSQueueBase/owner-zero-address");
-        queue.claimAndDeposit(address(0), address(0), 100e18);
+        queue.claimAndJoin(address(0), address(0), 100e18);
     }
 
     function testMultipleDeposits() public {
@@ -429,7 +429,7 @@ contract LCTSDepositQueueTest is Test {
 
         underlying.mint(address(this), 100e18);
         vm.expectRevert("LCTSQueueBase/queue-locked");
-        queue.claimAndDeposit(alice, alice, 100e18);
+        queue.claimAndJoin(alice, alice, 100e18);
     }
 
     function testClaimCurrentGenWhileLockedReverts() public {
@@ -644,7 +644,7 @@ contract LCTSWithdrawQueueTest is Test {
     // Helper to deposit vault shares as operator on behalf of a user
     function _deposit(uint256 vaultShares, address receiver) internal {
         vault.mint(address(this), vaultShares);
-        queue.claimAndDeposit(receiver, receiver, vaultShares);
+        queue.claimAndJoin(receiver, receiver, vaultShares);
     }
 
     // Helper to lock and settle
@@ -678,7 +678,7 @@ contract LCTSWithdrawQueueTest is Test {
 
         vm.expectRevert("LCTSQueueBase/not-authorized");
         vm.prank(unauthorized);
-        queue.claimAndDeposit(unauthorized, unauthorized, 100e18);
+        queue.claimAndJoin(unauthorized, unauthorized, 100e18);
     }
 
     function testUnauthorizedClaimReverts() public {
@@ -705,7 +705,7 @@ contract LCTSWithdrawQueueTest is Test {
 
         vm.expectEmit(true, true, true, true);
         emit Deposit(alice, 0, alice, 0, 100e18, 100e18);
-        queue.claimAndDeposit(alice, alice, 100e18);
+        queue.claimAndJoin(alice, alice, 100e18);
 
         (uint256 gen, uint256 shares, uint256 rewardDebt) = queue.positions(alice);
         assertEq(gen, 0);
@@ -716,13 +716,13 @@ contract LCTSWithdrawQueueTest is Test {
 
     function testDepositZeroReverts() public {
         vm.expectRevert("LCTSQueueBase/zero-underlyingAmt");
-        queue.claimAndDeposit(alice, alice, 0);
+        queue.claimAndJoin(alice, alice, 0);
     }
 
     function testDepositZeroAddressReverts() public {
         vault.mint(address(this), 100e18);
         vm.expectRevert("LCTSQueueBase/owner-zero-address");
-        queue.claimAndDeposit(address(0), address(0), 100e18);
+        queue.claimAndJoin(address(0), address(0), 100e18);
     }
 
     // --- Settle Tests ---

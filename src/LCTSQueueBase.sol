@@ -92,7 +92,7 @@ abstract contract LCTSQueueBase {
         emit Lock(currentGen);
     }
 
-    function _claimRewards(Position storage pos, address owner, address rewardsTo) internal returns (uint256 rewardsAmt) {
+    function _claimRewards(address owner, Position storage pos, address rewardsTo) internal returns (uint256 rewardsAmt) {
         uint256 rpt = rewardPerToken[pos.gen];
         rewardsAmt = pos.shares * (rpt - pos.rewardDebt) / WAD;
         pos.rewardDebt = rpt;
@@ -103,12 +103,12 @@ abstract contract LCTSQueueBase {
         }
     }
 
-    /// @notice Claim accrued rewards and deposit underlying assets into the queue
+    /// @notice Claim accrued rewards and join (deposit) underlying assets into the queue
     /// @param owner Address to credit the deposit
     /// @param underlyingAmt Amount of underlying to deposit (pulled from msg.sender)
     /// @param rewardsTo Address to receive rewards
     /// @return rewardsAmt Amount of rewards claimed
-    function claimAndDeposit(address owner, address rewardsTo, uint256 underlyingAmt) external auth returns (uint256 rewardsAmt) {
+    function claimAndJoin(address owner, address rewardsTo, uint256 underlyingAmt) external auth returns (uint256 rewardsAmt) {
         require(owner != address(0), "LCTSQueueBase/owner-zero-address");
         require(rewardsTo != address(0), "LCTSQueueBase/rewards-zero-address");
         require(underlyingAmt > 0, "LCTSQueueBase/zero-underlyingAmt");
@@ -116,7 +116,10 @@ abstract contract LCTSQueueBase {
 
         Position storage pos = positions[owner];
 
-        rewardsAmt = _claimRewards(pos, owner, rewardsTo);
+        rewardsAmt = _claimRewards(owner, pos, rewardsTo);
+
+        // Transfer underlying from caller
+        _pullUnderlying(msg.sender, underlyingAmt);
 
         // Calculate internal shares to mint
         uint256 shares = totalShares == 0
@@ -134,9 +137,6 @@ abstract contract LCTSQueueBase {
         } else {
             pos.shares += shares;
         }
-
-        // Transfer underlying from caller
-        _pullUnderlying(msg.sender, underlyingAmt);
 
         emit Deposit(owner, currentGen, rewardsTo, rewardsAmt, underlyingAmt, shares);
     }
@@ -157,7 +157,7 @@ abstract contract LCTSQueueBase {
         require(pos.shares > 0, "LCTSQueueBase/zero-shares");
 
         // Claim pending rewards
-        rewardsAmt = _claimRewards(pos, owner, rewardsTo);
+        rewardsAmt = _claimRewards(owner, pos, rewardsTo);
 
         // Calculate proportional underlying
         underlyingAmt = pos.shares * totalUnderlying / totalShares;
@@ -194,7 +194,7 @@ abstract contract LCTSQueueBase {
         require(pos.gen < currentGen || locked == 0, "LCTSQueueBase/queue-locked");
         require(pos.shares > 0, "LCTSQueueBase/no-position");
 
-        rewardsAmt = _claimRewards(pos, owner, rewardsTo);
+        rewardsAmt = _claimRewards(owner, pos, rewardsTo);
     }
 
     /// @notice Settle conversions for the current epoch

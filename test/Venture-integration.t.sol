@@ -22,12 +22,12 @@ import "dss-interfaces/Interfaces.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { Upgrades, Options } from "openzeppelin-foundry-upgrades/Upgrades.sol";
 
-import { SrUsds, UUPSUpgradeable, Initializable, ERC1967Utils } from "src/srusds/SrUsds.sol";
-import { SrUsdsHandler } from "src/srusds/SrUsdsHandler.sol";
+import { Venture, UUPSUpgradeable, Initializable, ERC1967Utils } from "src/Venture.sol";
+import { VentureHandler } from "src/VentureHandler.sol";
 
-import { SrUsdsInstance } from "deploy/srusds/SrUsdsInstance.sol";
-import { SrUsdsDeploy } from "deploy/srusds/SrUsdsDeploy.sol";
-import { SrUsdsInit, SrUsdsConfig } from "deploy/srusds/SrUsdsInit.sol";
+import { VentureInstance } from "deploy/VentureInstance.sol";
+import { VentureDeploy } from "deploy/VentureDeploy.sol";
+import { VentureInit, VentureConfig } from "deploy/VentureInit.sol";
 
 interface SUsdsLike {
     function balanceOf(address) external view returns (uint256);
@@ -39,7 +39,7 @@ interface UsdsLike {
     function approve(address, uint256) external;
 }
 
-contract SrUsds2 is UUPSUpgradeable {
+contract Venture2 is UUPSUpgradeable {
     // Admin
     mapping (address => uint256) public wards;
     // ERC20
@@ -57,7 +57,7 @@ contract SrUsds2 is UUPSUpgradeable {
     event UpgradedTo(string version);
 
     modifier auth {
-        require(wards[msg.sender] == 1, "SrUsds/not-authorized");
+        require(wards[msg.sender] == 1, "Venture/not-authorized");
         _;
     }
 
@@ -76,7 +76,7 @@ contract SrUsds2 is UUPSUpgradeable {
     }
 }
 
-contract SrUsdsIntegrationTest is TokenFuzzChecks {
+contract VentureIntegrationTest is TokenFuzzChecks {
 
     using GodMode for *;
 
@@ -84,12 +84,11 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
 
     DssInstance dss;
     address pauseProxy;
-    address susdsJoin;
     SUsdsLike susds;
     UsdsLike usds;
 
-    SrUsds token;
-    SrUsdsHandler handler;
+    Venture token;
+    VentureHandler handler;
     bool validate;
 
     event Settle(int256 assets, uint256 oldChi, uint256 newChi);
@@ -107,12 +106,12 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         pauseProxy = LOG.getAddress("MCD_PAUSE_PROXY");
         susds = SUsdsLike(LOG.getAddress("SUSDS"));
         usds = UsdsLike(LOG.getAddress("USDS"));
-        susdsJoin = LOG.getAddress("USDS_JOIN");
 
-        SrUsdsInstance memory inst = SrUsdsDeploy.deploy(address(this), pauseProxy);
-        token = SrUsds(inst.srUsds);
-        handler = SrUsdsHandler(inst.handler);
-        SrUsdsConfig memory conf = SrUsdsConfig({
+        VentureInstance memory inst = VentureDeploy.deploy(address(this), pauseProxy);
+        token = Venture(inst.venture);
+        handler = VentureHandler(inst.handler);
+        VentureConfig memory conf = VentureConfig({
+            handlerBuffer: address(0xC0FFEE),
             handlerLockTimeBgn: 13 hours,
             handlerLockTimeEnd: 14 hours,
             handlerSettleTime:  16 hours,
@@ -124,20 +123,17 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
             beamBuds: new address[](0)
         });
         vm.startPrank(pauseProxy);
-        SrUsdsInit.init(dss, inst, conf);
-        token.rely(address(this)); // To be able to deposit and withdraw
+        VentureInit.init(dss, inst, conf);
+        token.rely(address(this)); // To be able to mint and burn
         vm.stopPrank();
         assertEq(token.chi(), RAY);
         assertEq(token.rho(), block.timestamp);
         assertEq(token.wards(pauseProxy), 1);
         assertEq(token.version(), "1");
-        assertEq(token.getImplementation(), inst.srUsdsImp);
+        assertEq(token.getImplementation(), inst.ventureImp);
 
-        assertEq(dss.vat.can(address(handler), susdsJoin), 1);
-
-        deal(address(susds), address(this), 200e18);
-        susds.approve(address(token), type(uint256).max);
-        token.deposit(100e18, address(0x222));
+        // The token holds nothing: shares are minted against backing held by the handler's buffer
+        token.mint(100e18, address(0x222));
 
         token.settle(2e18);
 
@@ -156,31 +152,28 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         if (!validate) {
             opts.unsafeSkipAllChecks = true;
         } else {
-            opts.unsafeAllow = 'state-variable-immutable,constructor';
+            opts.unsafeAllow = 'constructor';
         }
-        opts.constructorData = abi.encode(
-                                    address(susds)
-                                    );
 
         vm.expectEmit(true, true, true, true);
         emit Rely(address(this));
         address proxy = Upgrades.deployUUPSProxy(
-            "out/SrUsds.sol/SrUsds.json",
-            abi.encodeCall(SrUsds.initialize, ()),
+            "out/Venture.sol/Venture.json",
+            abi.encodeCall(Venture.initialize, ()),
             opts
         );
-        assertEq(SrUsds(proxy).version(), "1");
-        assertEq(SrUsds(proxy).wards(address(this)), 1);
+        assertEq(Venture(proxy).version(), "1");
+        assertEq(Venture(proxy).wards(address(this)), 1);
     }
 
     function testUpgrade() public {
         address implementation1 = token.getImplementation();
 
-        address newImpl = address(new SrUsds2());
+        address newImpl = address(new Venture2());
         vm.startPrank(pauseProxy);
         vm.expectEmit(true, true, true, true);
         emit UpgradedTo("2");
-        token.upgradeToAndCall(newImpl, abi.encodeCall(SrUsds2.reinitialize, ()));
+        token.upgradeToAndCall(newImpl, abi.encodeCall(Venture2.reinitialize, ()));
         vm.stopPrank();
 
         address implementation2 = token.getImplementation();
@@ -197,7 +190,7 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         if (!validate) {
             opts.unsafeSkipAllChecks = true;
         } else {
-            opts.referenceContract = "out/SrUsds.sol/SrUsds.json";
+            opts.referenceContract = "out/Venture.sol/Venture.json";
             opts.unsafeAllow = 'constructor';
         }
 
@@ -206,8 +199,8 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         emit UpgradedTo("2");
         Upgrades.upgradeProxy(
             address(token),
-            "out/SrUsds-integration.t.sol/SrUsds2.json",
-            abi.encodeCall(SrUsds2.reinitialize, ()),
+            "out/Venture-integration.t.sol/Venture2.json",
+            abi.encodeCall(Venture2.reinitialize, ()),
             opts
         );
         vm.stopPrank();
@@ -219,9 +212,9 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
     }
 
     function testUpgradeUnauthed() public {
-        address newImpl = address(new SrUsds2());
-        vm.expectRevert("SrUsds/not-authorized");
-        vm.prank(address(0x123)); token.upgradeToAndCall(newImpl, abi.encodeCall(SrUsds2.reinitialize, ()));
+        address newImpl = address(new Venture2());
+        vm.expectRevert("Venture/not-authorized");
+        vm.prank(address(0x123)); token.upgradeToAndCall(newImpl, abi.encodeCall(Venture2.reinitialize, ()));
     }
 
     function testInitializeAgain() public {
@@ -232,35 +225,35 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
     function testInitializeDirectly() public {
         address implementation = token.getImplementation();
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        SrUsds(implementation).initialize();
+        Venture(implementation).initialize();
     }
 
     function testConstructor() public {
-        address imp = address(new SrUsds(address(susds)));
+        address imp = address(new Venture());
         vm.expectEmit(true, true, true, true);
         emit Rely(address(this));
-        SrUsds token2 = SrUsds(address(new ERC1967Proxy(imp, abi.encodeCall(SrUsds.initialize, ()))));
-        assertEq(token2.name(), "Senior Risk USDS");
-        assertEq(token2.symbol(), "srUSDS");
+        Venture token2 = Venture(address(new ERC1967Proxy(imp, abi.encodeCall(Venture.initialize, ()))));
+        assertEq(token2.name(), "Venture Unit");
+        assertEq(token2.symbol(), "vUNIT");
         assertEq(token2.version(), "1");
         assertEq(token2.decimals(), 18);
         assertEq(token2.chi(), RAY);
         assertEq(token2.rho(), block.timestamp);
         assertEq(token2.wards(address(this)), 1);
-        assertEq(address(token2.susds()), address(susds));
-        assertEq(address(token2.asset()), address(susds));
+        assertEq(token2.totalSupply(), 0);
+        assertEq(token2.totalAssets(), 0);
     }
 
     function testAuth() public {
-        checkAuth(address(token), "SrUsds");
+        checkAuth(address(token), "Venture");
     }
 
     function testERC20() public {
-        checkBulkERC20(address(token), "SrUsds", "Senior Risk USDS", "srUSDS", "1", 18);
+        checkBulkERC20(address(token), "Venture", "Venture Unit", "vUNIT", "1", 18);
     }
 
     function testPermit() public {
-        checkBulkPermit(address(token), "SrUsds");
+        checkBulkPermit(address(token), "Venture");
     }
 
     function testConversion() public {
@@ -282,58 +275,75 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
     uint256 chiBefore;
     uint256 chiAfter;
 
-    function testDeposit() public {
+    function testMint() public {
         uint256 prevSupply = token.totalSupply();
-        uint256 srusdsSusds = susds.balanceOf(address(token));
+        uint256 prevAssets = token.totalAssets();
 
         uint256 pie = 1e18 * RAY / token.chi();
         vm.expectEmit();
-        emit Deposit(address(this), address(0xBEEF), 1e18, pie);
-        vm.expectEmit();
         emit Transfer(address(0), address(0xBEEF), pie);
-        token.deposit(1e18, address(0xBEEF));
+        token.mint(pie, address(0xBEEF));
 
         assertEq(token.totalSupply(), prevSupply + pie);
-        assertLe(token.totalAssets(), srusdsSusds + 1e18); // May be slightly less due to rounding error
-        assertGe(token.totalAssets(), srusdsSusds + 1e18 - 1);
         assertEq(token.balanceOf(address(0xBEEF)), pie);
-        assertEq(susds.balanceOf(address(token)), srusdsSusds + _divup(pie * token.chi(), RAY));
+
+        // Minting raises the claim without any asset moving here
+        assertLe(token.totalAssets(), prevAssets + 1e18); // May be slightly less due to rounding error
+        assertGe(token.totalAssets(), prevAssets + 1e18 - 1);
+        assertEq(susds.balanceOf(address(token)), 0);
     }
 
-    function testDepositBadAddress() public {
-        vm.expectRevert("SrUsds/invalid-address");
-        token.deposit(1e18, address(0));
-        vm.expectRevert("SrUsds/invalid-address");
-        token.deposit(1e18, address(token));
+    function testMintBadAddress() public {
+        vm.expectRevert("Venture/invalid-address");
+        token.mint(1e18, address(0));
+        vm.expectRevert("Venture/invalid-address");
+        token.mint(1e18, address(token));
     }
 
-    function testRedeem() public {
+    function testMintUnauthed() public {
+        vm.expectRevert("Venture/not-authorized");
+        vm.prank(address(0x123)); token.mint(1e18, address(0xBEEF));
+    }
+
+    function testBurn() public {
         uint256 prevSupply = token.totalSupply();
-        uint256 srusdsSusds = susds.balanceOf(address(token));
 
         chiBefore = token.chi();
         uint256 pie = 10e18 * RAY / chiBefore;
-        chiAfter = token.chi() * ((prevSupply + pie) * chiBefore / RAY + 5e18) / ((prevSupply + pie) * chiBefore / RAY);
+        chiAfter = chiBefore * ((prevSupply + pie) * chiBefore / RAY + 5e18) / ((prevSupply + pie) * chiBefore / RAY);
         assertGt(chiAfter, chiBefore);
 
-        token.deposit(10e18, address(0xBEEF));
-
-        assertEq(susds.balanceOf(address(token)), srusdsSusds + _divup(pie * chiBefore, RAY));
+        token.mint(pie, address(0xBEEF));
 
         token.settle(5e18);
         assertEq(token.chi(), chiAfter);
 
-        token.rely(address(0xBEEF)); // To be able to redeem
+        uint256 burned = pie * 0.1e18 / WAD;
+
+        token.rely(address(0xBEEF)); // To be able to burn
         vm.expectEmit();
-        emit Transfer(address(0xBEEF), address(0), pie * 0.1e18 / WAD);
-        vm.expectEmit();
-        emit Withdraw(address(0xBEEF), address(0xAAA), address(0xBEEF), (pie * 0.1e18 / WAD) * chiAfter / RAY, pie * 0.1e18 / WAD);
-        vm.prank(address(0xBEEF)); token.redeem(pie * 0.1e18 / WAD, address(0xAAA), address(0xBEEF));
-        
-        assertEq(token.totalSupply(), prevSupply + pie - pie * 0.1e18 / WAD);
-        assertEq(token.balanceOf(address(0xBEEF)), pie - pie * 0.1e18 / WAD);
-        assertEq(susds.balanceOf(address(0xAAA)), (pie * 0.1e18 / WAD) * chiAfter / RAY);
-        assertEq(susds.balanceOf(address(token)), srusdsSusds + _divup(pie * chiBefore, RAY) + 5e18 - (pie * 0.1e18 / WAD) * chiAfter / RAY);
+        emit Transfer(address(0xBEEF), address(0), burned);
+        vm.prank(address(0xBEEF)); token.burn(burned, address(0xBEEF));
+
+        assertEq(token.totalSupply(), prevSupply + pie - burned);
+        assertEq(token.balanceOf(address(0xBEEF)), pie - burned);
+        assertEq(susds.balanceOf(address(token)), 0);
+    }
+
+    function testBurnUnauthed() public {
+        token.mint(1e18, address(0xBEEF));
+
+        vm.expectRevert("Venture/not-authorized");
+        vm.prank(address(0x123)); token.burn(1e18, address(0xBEEF));
+    }
+
+    function testBurnWithoutApprovalReverts() public {
+        token.mint(1e18, address(0xBEEF));
+
+        // A ward still cannot burn a third party's shares without an allowance
+        token.rely(address(0xAAA));
+        vm.expectRevert("Venture/insufficient-allowance");
+        vm.prank(address(0xAAA)); token.burn(1e18, address(0xBEEF));
     }
 
     function testERC20Fuzz(
@@ -342,7 +352,7 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         uint256 amount1,
         uint256 amount2
     ) public {
-        checkBulkERC20Fuzz(address(token), "SrUsds", from, to, amount1, amount2);
+        checkBulkERC20Fuzz(address(token), "Venture", from, to, amount1, amount2);
     }
 
     function testPermitFuzz(
@@ -352,16 +362,12 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         uint256 deadline,
         uint256 nonce
     ) public {
-        checkBulkPermitFuzz(address(token), "SrUsds", privKey, to, amount, deadline, nonce);
+        checkBulkPermitFuzz(address(token), "Venture", privKey, to, amount, deadline, nonce);
     }
 
     function testSettlePositive() public {
-        deal(address(susds), address(pauseProxy), 50e18);
-        vm.prank(pauseProxy); susds.approve(address(token), 50e18);
-        uint256 senderUsds = susds.balanceOf(address(pauseProxy));
-        uint256 srusdsUsds = susds.balanceOf(address(token));
+        uint256 senderSusds = susds.balanceOf(address(pauseProxy));
         uint256 totalAssets = token.totalAssets();
-        assertLe(totalAssets, srusdsUsds);
         chiBefore = token.chi();
         chiAfter = chiBefore * (totalAssets + 50e18) / totalAssets;
 
@@ -369,17 +375,16 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         emit Settle(50e18, chiBefore, chiAfter);
         vm.prank(pauseProxy); token.settle(50e18);
 
-        assertEq(susds.balanceOf(address(token)), srusdsUsds + 50e18);
-        assertEq(susds.balanceOf(address(pauseProxy)), senderUsds - 50e18);
+        // Revaluation only: the backing lives with the handler's buffer
         assertEq(token.chi(), chiAfter);
         assertEq(token.totalAssets(), totalAssets + 50e18);
+        assertEq(susds.balanceOf(address(token)), 0);
+        assertEq(susds.balanceOf(address(pauseProxy)), senderSusds);
     }
 
     function testSettleNegative() public {
-        uint256 senderUsds = susds.balanceOf(address(pauseProxy));
-        uint256 srusdsUsds = susds.balanceOf(address(token));
+        uint256 senderSusds = susds.balanceOf(address(pauseProxy));
         uint256 totalAssets = token.totalAssets();
-        assertLe(totalAssets, srusdsUsds);
         chiBefore = token.chi();
         chiAfter = chiBefore * (totalAssets - 50e18) / totalAssets;
 
@@ -387,9 +392,26 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         emit Settle(-50e18, chiBefore, chiAfter);
         vm.prank(pauseProxy); token.settle(-50e18);
 
-        assertEq(susds.balanceOf(address(token)), srusdsUsds - 50e18);
-        assertEq(susds.balanceOf(address(pauseProxy)), senderUsds + 50e18);
         assertEq(token.chi(), chiAfter);
         assertEq(token.totalAssets(), totalAssets - 50e18);
+        assertEq(susds.balanceOf(address(token)), 0);
+        assertEq(susds.balanceOf(address(pauseProxy)), senderSusds);
+    }
+
+    function testSettleNoSupplyKeepsChi() public {
+        Venture token2 = Venture(address(new ERC1967Proxy(address(new Venture()), abi.encodeCall(Venture.initialize, ()))));
+
+        // No shares outstanding: chi must survive, since it divides every conversion
+        token2.settle(50e18);
+        assertEq(token2.chi(), RAY);
+
+        token2.settle(-50e18);
+        assertEq(token2.chi(), RAY);
+    }
+
+    function testSettleTotalLossKeepsChiNonZero() public {
+        token.settle(-int256(token.totalAssets()));
+
+        assertEq(token.chi(), 1);
     }
 }

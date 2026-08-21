@@ -16,12 +16,10 @@
 
 pragma solidity >=0.8.0;
 
-struct SrUsdsInstance {
-    address srUsds;
-    address srUsdsImp;
+struct VentureInstance {
+    address venture;
+    address ventureImp;
     address handler;
     address beam;
     address mom;
-    address depositQueue;
-    address withdrawQueue;
 }

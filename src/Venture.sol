@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/// SrUsds.sol
+/// Venture.sol
 
 // Copyright (C) 2017, 2018, 2019 dbrock, rain, mrchico
 // Copyright (C) 2021 Dai Foundation
@@ -29,12 +29,12 @@ interface IERC1271 {
     ) external view returns (bytes4);
 }
 
-interface SUsdsLike {
-    function transfer(address, uint256) external;
-    function transferFrom(address, address, uint256) external;
-}
-
-contract SrUsds is UUPSUpgradeable {
+/// @title Venture
+/// @notice Claim token whose backing is held and invested elsewhere
+/// @dev This contract holds no assets. Shares are minted and burned by the handler, and chi tracks
+///      what a share is worth, so totalAssets() is the net asset value asserted by settle() rather
+///      than a balance held here.
+contract Venture is UUPSUpgradeable {
 
     // --- Storage Variables ---
 
@@ -52,18 +52,14 @@ contract SrUsds is UUPSUpgradeable {
     // --- Constants ---
 
     // ERC20
-    string  public constant name     = "Senior Risk USDS";
-    string  public constant symbol   = "srUSDS";
+    string  public constant name     = "Venture Unit";
+    string  public constant symbol   = "vUNIT";
     string  public constant version  = "1";
     uint8   public constant decimals = 18;
     // Math
     uint256 private constant RAY = 10 ** 27;
     // EIP712
     bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
-
-    // --- Immutables ---
-
-    SUsdsLike public immutable susds;
 
     // --- Events ---
 
@@ -75,23 +71,18 @@ contract SrUsds is UUPSUpgradeable {
     // ERC20
     event Approval(address indexed owner, address indexed spender, uint256 value);
     event Transfer(address indexed from, address indexed to, uint256 value);
-    // ERC4626
-    event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
-    event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
 
     // --- Modifiers ---
 
     modifier auth {
-        require(wards[msg.sender] == 1, "SrUsds/not-authorized");
+        require(wards[msg.sender] == 1, "Venture/not-authorized");
         _;
     }
 
     // --- Constructor ---
 
-    constructor(address susds_) {
+    constructor() {
         _disableInitializers(); // Avoid initializing in the context of the implementation
-
-        susds = SUsdsLike(susds_);
     }
 
     // --- Upgradability ---
@@ -154,21 +145,22 @@ contract SrUsds is UUPSUpgradeable {
         emit Deny(usr);
     }
 
+    /// @notice Revalue the outstanding shares by `assets`, positive for gains and negative for losses
+    /// @dev No assets move here: the backing lives with the handler's conduit, so this only moves chi
     function settle(int256 assets) external auth returns (uint256 newChi) {
         uint256 oldChi = chi;
         uint256 totalAssets_ = totalSupply * oldChi / RAY;
-        uint256 newTotalAssets;
-        if (assets > 0) {
-            susds.transferFrom(msg.sender, address(this), uint256(assets));
-            newTotalAssets = totalAssets_ + uint256(assets);
-        } else {
-            uint256 assets_ = _min(uint256(-assets), totalAssets_);
-            susds.transfer(msg.sender, assets_);
-            newTotalAssets = totalAssets_ - assets_;
-        }
-        newChi = chi = totalAssets_ > 0
-                               ? _toUint192(oldChi * newTotalAssets / totalAssets_)
-                               : 0;
+
+        // Nothing outstanding to revalue: keep chi, as it is a divisor everywhere
+        if (totalAssets_ == 0) return oldChi;
+
+        uint256 newTotalAssets = assets > 0
+                                 ? totalAssets_ + uint256(assets)
+                                 : totalAssets_ - _min(uint256(-assets), totalAssets_);
+
+        newChi = _toUint192(oldChi * newTotalAssets / totalAssets_);
+        if (newChi == 0) newChi = 1; // A total loss must still leave chi non-zero
+        chi = uint192(newChi);
         rho = uint64(block.timestamp);
         emit Settle(assets, oldChi, newChi);
     }
@@ -176,9 +168,9 @@ contract SrUsds is UUPSUpgradeable {
     // --- ERC20 Mutations ---
 
     function transfer(address to, uint256 value) external returns (bool) {
-        require(to != address(0) && to != address(this), "SrUsds/invalid-address");
+        require(to != address(0) && to != address(this), "Venture/invalid-address");
         uint256 balance = balanceOf[msg.sender];
-        require(balance >= value, "SrUsds/insufficient-balance");
+        require(balance >= value, "Venture/insufficient-balance");
 
         unchecked {
             balanceOf[msg.sender] = balance - value;
@@ -191,14 +183,14 @@ contract SrUsds is UUPSUpgradeable {
     }
 
     function transferFrom(address from, address to, uint256 value) external returns (bool) {
-        require(to != address(0) && to != address(this), "SrUsds/invalid-address");
+        require(to != address(0) && to != address(this), "Venture/invalid-address");
         uint256 balance = balanceOf[from];
-        require(balance >= value, "SrUsds/insufficient-balance");
+        require(balance >= value, "Venture/insufficient-balance");
 
         if (from != msg.sender) {
             uint256 allowed = allowance[from][msg.sender];
             if (allowed != type(uint256).max) {
-                require(allowed >= value, "SrUsds/insufficient-allowance");
+                require(allowed >= value, "Venture/insufficient-allowance");
 
                 unchecked {
                     allowance[from][msg.sender] = allowed - value;
@@ -224,30 +216,29 @@ contract SrUsds is UUPSUpgradeable {
         return true;
     }
 
-    // --- Mint/Burn Internal ---
+    // --- Mint/Burn ---
 
-    function _mint(uint256 assets, uint256 shares, address receiver) internal {
-        require(receiver != address(0) && receiver != address(this), "SrUsds/invalid-address");
-
-        susds.transferFrom(msg.sender, address(this), assets);
+    /// @notice Mint `shares` to `receiver`, backed by assets held elsewhere
+    function mint(uint256 shares, address receiver) external auth {
+        require(receiver != address(0) && receiver != address(this), "Venture/invalid-address");
 
         unchecked {
             balanceOf[receiver] = balanceOf[receiver] + shares; // note: we don't need an overflow check here b/c balanceOf[receiver] <= totalSupply
         }
         totalSupply = totalSupply + shares;
 
-        emit Deposit(msg.sender, receiver, assets, shares);
         emit Transfer(address(0), receiver, shares);
     }
 
-    function _burn(uint256 assets, uint256 shares, address receiver, address owner) internal {
+    /// @notice Burn `shares` from `owner`, whose assets are released elsewhere
+    function burn(uint256 shares, address owner) external auth {
         uint256 balance = balanceOf[owner];
-        require(balance >= shares, "SrUsds/insufficient-balance");
+        require(balance >= shares, "Venture/insufficient-balance");
 
         if (owner != msg.sender) {
             uint256 allowed = allowance[owner][msg.sender];
             if (allowed != type(uint256).max) {
-                require(allowed >= shares, "SrUsds/insufficient-allowance");
+                require(allowed >= shares, "Venture/insufficient-allowance");
 
                 unchecked {
                     allowance[owner][msg.sender] = allowed - shares;
@@ -260,17 +251,10 @@ contract SrUsds is UUPSUpgradeable {
             totalSupply      = totalSupply - shares;
         }
 
-        susds.transfer(receiver, assets);
-
         emit Transfer(owner, address(0), shares);
-        emit Withdraw(msg.sender, receiver, owner, assets, shares);
     }
 
-    // --- ERC-4626 ---
-
-    function asset() external view returns (address) {
-        return address(susds);
-    }
+    // --- Net Asset Value ---
 
     function totalAssets() external view returns (uint256) {
         return convertToAssets(totalSupply);
@@ -283,17 +267,6 @@ contract SrUsds is UUPSUpgradeable {
 
     function convertToAssets(uint256 shares) public view returns (uint256) {
         return shares * chi / RAY;
-    }
-
-    function deposit(uint256 assets, address receiver) external auth returns (uint256 shares) {
-        shares = assets * RAY / chi;
-        _mint(assets, shares, receiver);
-    }
-
-    function redeem(uint256 shares, address receiver, address owner) external auth returns (uint256 assets) {
-        assets = shares * chi / RAY;
-        require(assets > 0, "SrUsds/assets-zero");
-        _burn(assets, shares, receiver, owner);
     }
 
     // --- Approve by signature ---
@@ -334,8 +307,8 @@ contract SrUsds is UUPSUpgradeable {
         uint256 deadline,
         bytes memory signature
     ) public {
-        require(block.timestamp <= deadline, "SrUsds/permit-expired");
-        require(owner != address(0), "SrUsds/invalid-owner");
+        require(block.timestamp <= deadline, "Venture/permit-expired");
+        require(owner != address(0), "Venture/invalid-owner");
 
         uint256 nonce;
         unchecked { nonce = nonces[owner]++; }
@@ -354,7 +327,7 @@ contract SrUsds is UUPSUpgradeable {
                 ))
             ));
 
-        require(_isValidSignature(owner, digest, signature), "SrUsds/invalid-permit");
+        require(_isValidSignature(owner, digest, signature), "Venture/invalid-permit");
 
         allowance[owner][spender] = value;
         emit Approval(owner, spender, value);

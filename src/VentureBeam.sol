@@ -21,7 +21,7 @@ interface HandlerLike {
     function plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
 }
 
-contract LCTSBeam {
+contract VentureBeam {
     // --- Storage Variables ---
     mapping(address => uint256) public wards;
     mapping(address => uint256) public buds;
@@ -47,17 +47,17 @@ contract LCTSBeam {
 
     // --- Modifiers ---
     modifier auth() {
-        require(wards[msg.sender] == 1, "LCTSBeam/not-authorized");
+        require(wards[msg.sender] == 1, "VentureBeam/not-authorized");
         _;
     }
 
     modifier toll() {
-        require(buds[msg.sender] == 1, "LCTSBeam/not-facilitator");
+        require(buds[msg.sender] == 1, "VentureBeam/not-facilitator");
         _;
     }
 
     modifier good() {
-        require(bad == 0, "LCTSBeam/module-halted");
+        require(bad == 0, "VentureBeam/module-halted");
         _;
     }
 
@@ -91,7 +91,7 @@ contract LCTSBeam {
 
     function file(bytes32 what, uint256 data) external auth {
         if (what == "bad") {
-            require(data == 0 || data == 1, "LCTSBeam/invalid-bad-value");
+            require(data == 0 || data == 1, "VentureBeam/invalid-bad-value");
             bad = uint8(data);
         } else if (what == "maxMint") {
             maxMint = data;
@@ -103,14 +103,14 @@ contract LCTSBeam {
             maxWithdrawCapacity = data;
         } else if (what == "hop") {
             hop = data;
-        } else revert("LCTSBeam/file-unrecognized-param");
+        } else revert("VentureBeam/file-unrecognized-param");
         emit File(what, data);
     }
 
     /// @notice Lock both queues
     function lock() external toll good {
         uint256 day = block.timestamp / 1 days;
-        require(day >= rho + hop, "LCTSBeam/too-soon");
+        require(day >= rho + hop, "VentureBeam/too-soon");
         rho = day;
         handler.lock();
         emit Lock();
@@ -125,10 +125,10 @@ contract LCTSBeam {
         uint256 depositCapacity,
         uint256 withdrawCapacity
     ) external toll good {
-        require(settleAmt <= 0 || uint256(settleAmt) <= maxMint, "LCTSBeam/maxMint-exceed");
-        require(settleAmt >= 0 || uint256(-settleAmt) <= maxCut, "LCTSBeam/maxCut-exceed");
-        require(depositCapacity <= maxDepositCapacity, "LCTSBeam/maxDepositCapacity-exceed");
-        require(withdrawCapacity <= maxWithdrawCapacity, "LCTSBeam/maxWithdrawCapacity-exceed");
+        require(settleAmt <= 0 || uint256(settleAmt) <= maxMint, "VentureBeam/maxMint-exceed");
+        require(settleAmt >= 0 || uint256(-settleAmt) <= maxCut, "VentureBeam/maxCut-exceed");
+        require(depositCapacity <= maxDepositCapacity, "VentureBeam/maxDepositCapacity-exceed");
+        require(withdrawCapacity <= maxWithdrawCapacity, "VentureBeam/maxWithdrawCapacity-exceed");
 
         handler.plan(settleAmt, depositCapacity, withdrawCapacity);
 

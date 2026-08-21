@@ -29,7 +29,7 @@ interface BeamLike {
     function file(bytes32, uint256) external;
 }
 
-contract LCTSMom {
+contract VentureMom {
     // --- Storage ---
     address public owner;
     address public authority;
@@ -50,12 +50,12 @@ contract LCTSMom {
 
     // --- Modifiers ---
     modifier onlyOwner() {
-        require(msg.sender == owner, "LCTSMom/not-owner");
+        require(msg.sender == owner, "VentureMom/not-owner");
         _;
     }
 
     modifier auth() {
-        require(isAuthorized(msg.sender, msg.sig), "LCTSMom/not-authorized");
+        require(isAuthorized(msg.sender, msg.sig), "VentureMom/not-authorized");
         _;
     }
 

@@ -20,7 +20,7 @@ contract VentureHandlerTest is DssTest {
     // --- Events ---
 
     event Lock();
-    event Plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
+    event Plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity);
     event Settle(uint256 depositsConverted, uint256 withdrawsConverted);
 
     function setUp() public {
@@ -105,13 +105,13 @@ contract VentureHandlerTest is DssTest {
 
     // Helper: full lock -> plan -> settle cycle
     function _lockPlanSettle(
-        int256 settleAmt_,
+        int256 profit_,
         uint256 depositCap,
         uint256 withdrawCap
     ) internal {
         _warpToLockWindow();
         handler.lock();
-        handler.plan(settleAmt_, depositCap, withdrawCap);
+        handler.plan(profit_, depositCap, withdrawCap);
         _warpToSettleTime();
         handler.settle();
     }
@@ -312,7 +312,7 @@ contract VentureHandlerTest is DssTest {
         emit Plan(100, 200e18, 300e18);
         handler.plan(100, 200e18, 300e18);
 
-        assertEq(handler.settleAmt(), 100);
+        assertEq(handler.profit(), 100);
         assertEq(handler.depositCapacity(), 200e18);
         assertEq(handler.withdrawCapacity(), 300e18);
     }
@@ -322,7 +322,7 @@ contract VentureHandlerTest is DssTest {
         handler.lock();
 
         handler.plan(-50, 0, 0);
-        assertEq(handler.settleAmt(), -50);
+        assertEq(handler.profit(), -50);
     }
 
     function testPlanOverwritesPrevious() public {
@@ -332,7 +332,7 @@ contract VentureHandlerTest is DssTest {
         handler.plan(100, 200e18, 300e18);
         handler.plan(-50, 10e18, 20e18);
 
-        assertEq(handler.settleAmt(), -50);
+        assertEq(handler.profit(), -50);
         assertEq(handler.depositCapacity(), 10e18);
         assertEq(handler.withdrawCapacity(), 20e18);
     }
@@ -359,7 +359,7 @@ contract VentureHandlerTest is DssTest {
 
         // Verify state reset
         assertEq(handler.locked(), 0);
-        assertEq(handler.settleAmt(), 0);
+        assertEq(handler.profit(), 0);
         assertEq(handler.depositCapacity(), 0);
         assertEq(handler.withdrawCapacity(), 0);
     }
@@ -612,7 +612,7 @@ contract VentureHandlerTest is DssTest {
         handler.settle();
 
         assertEq(handler.locked(), 0);
-        assertEq(handler.settleAmt(), 0);
+        assertEq(handler.profit(), 0);
         assertEq(handler.depositCapacity(), 0);
         assertEq(handler.withdrawCapacity(), 0);
     }

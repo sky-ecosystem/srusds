@@ -41,7 +41,7 @@ interface GemLike is TokenLike {
 /// @title VentureHandler
 /// @notice Settlement cycle handler and deposit/withdraw queues for the Venture token
 /// @dev Manages daily settlement cycles with explicit lock/settle timestamps. On settlement the
-///      Venture chi is adjusted by settleAmt and both queues convert up to their planned capacity.
+///      Venture chi is adjusted by profit and both queues convert up to their planned capacity.
 ///
 ///      Both queues implement the generation-based model where all users in the same generation
 ///      share proportionally in the conversion capacity allocated to that generation. The deposit
@@ -82,7 +82,7 @@ contract VentureHandler {
     uint256 public lockTimeBgn;      // Time in the day when lock window opens  [seconds, e.g. 13 hours   == 13:00 UTC]
     uint256 public lockTimeEnd;      // Time in the day when lock window closes [seconds, e.g. 13.5 hours == 13:30 UTC]
     uint256 public settleTime;       // Time in the day when settlement can be executed [seconds, e.g. 16 hours == 16:00 UTC]
-    int256  public settleAmt;        // Underlying adjustment amount
+    int256  public profit;           // Underlying adjustment amount
     uint256 public depositCapacity;  // Deposit queue capacity
     uint256 public withdrawCapacity; // Withdraw queue capacity
 
@@ -108,7 +108,7 @@ contract VentureHandler {
     event File(bytes32 indexed what, uint256 data);
     event File(bytes32 indexed what, address data);
     event Lock();
-    event Plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
+    event Plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity);
     event Settle(uint256 depositsConverted, uint256 withdrawsConverted);
     event Join(bool indexed isDeposit, address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, uint256 underlying, uint256 shares);
     event Exit(bool indexed isDeposit, address indexed owner, uint256 indexed gen, address rewardsTo, uint256 rewards, address underlyingTo, uint256 underlying);
@@ -258,15 +258,15 @@ contract VentureHandler {
 
     /// @notice Set settlement parameters
     function plan(
-        int256  settleAmt_,
+        int256  profit_,
         uint256 depositCapacity_,
         uint256 withdrawCapacity_
     ) external auth {
         require(locked == 1, "VentureHandler/not-locked");
-        settleAmt        = settleAmt_;
+        profit           = profit_;
         depositCapacity  = depositCapacity_;
         withdrawCapacity = withdrawCapacity_;
-        emit Plan(settleAmt_, depositCapacity_, withdrawCapacity_);
+        emit Plan(profit_, depositCapacity_, withdrawCapacity_);
     }
 
     // --- Settlement ---
@@ -278,7 +278,7 @@ contract VentureHandler {
         require(block.timestamp >= settleTimestamp, "VentureHandler/settle-too-early");
 
         // Revalue the outstanding shares; the backing being revalued sits at the buffer
-        venture.settle(settleAmt);
+        venture.settle(profit);
 
         // Convert both queues up to their planned capacity
         uint256 depositsConverted  = _convert(true);
@@ -286,7 +286,7 @@ contract VentureHandler {
 
         // Reset settlement params
         locked           = 0;
-        settleAmt        = 0;
+        profit           = 0;
         depositCapacity  = 0;
         withdrawCapacity = 0;
 

@@ -88,8 +88,6 @@ library VentureInit {
         // --- Configure Venture permissions ---
         // Handler needs auth to call settle(), mint() and burn()
         VentureLike(instance.venture).rely(instance.handler);
-        // Mom needs auth for emergency actions
-        VentureLike(instance.venture).rely(instance.mom);
 
         // --- Configure Handler ---
         HandlerLike(instance.handler).file("buffer", cfg.handlerBuffer);

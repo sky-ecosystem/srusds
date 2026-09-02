@@ -47,7 +47,7 @@ contract Venture is UUPSUpgradeable {
     mapping (address => uint256)                      public nonces;
     // Savings yield
     uint192 public chi;   // The Rate Accumulator [ray]
-    uint64  public rho;   // Time of last settle  [unix epoch time]
+    // uint64  public rho;   // Time of last settle  [unix epoch time]
 
     // --- Constants ---
 
@@ -91,7 +91,7 @@ contract Venture is UUPSUpgradeable {
         __UUPSUpgradeable_init();
 
         chi = uint192(RAY);
-        rho = uint64(block.timestamp);
+        // rho = uint64(block.timestamp);
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
     }
@@ -161,7 +161,7 @@ contract Venture is UUPSUpgradeable {
         newChi = _toUint192(oldChi * newTotalAssets / totalAssets_);
         if (newChi == 0) newChi = 1; // A total loss must still leave chi non-zero
         chi = uint192(newChi);
-        rho = uint64(block.timestamp);
+        // rho = uint64(block.timestamp);
         emit Settle(assets, oldChi, newChi);
     }
 

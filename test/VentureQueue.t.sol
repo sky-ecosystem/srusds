@@ -252,7 +252,7 @@ abstract contract VentureQueueTestBase is DssTest {
     function testJoinRewardsToZeroAddressReverts() public {
         _fund(alice, 100e18);
 
-        vm.expectRevert("VentureHandler/rewards-zero-address");
+        vm.expectRevert("VentureHandler/rewardsTo-zero-address");
         vm.prank(alice);
         if (isDeposit) handler.claimVentureAndJoinGem(address(0), 100e18);
         else           handler.claimGemAndJoinVenture(address(0), 100e18);
@@ -527,7 +527,7 @@ abstract contract VentureQueueTestBase is DssTest {
     function testExitRewardsToZeroAddressReverts() public {
         _join(alice, 100e18);
 
-        vm.expectRevert("VentureHandler/rewards-zero-address");
+        vm.expectRevert("VentureHandler/rewardsTo-zero-address");
         _exitAs(alice, address(0), alice);
     }
 

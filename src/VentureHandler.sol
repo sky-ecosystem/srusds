@@ -320,7 +320,7 @@ contract VentureHandler {
     }
 
     function _join(bool isDeposit, address owner, address rewardsTo, uint256 underlyingAmt) internal returns (uint256 rewardsAmt) {
-        require(rewardsTo != address(0), "VentureHandler/rewards-zero-address");
+        require(rewardsTo != address(0), "VentureHandler/rewardsTo-zero-address");
         require(underlyingAmt > 0, "VentureHandler/zero-underlyingAmt");
         require(locked == 0, "VentureHandler/queue-locked");
 
@@ -353,7 +353,7 @@ contract VentureHandler {
     }
 
     function _exit(bool isDeposit, address owner, address rewardsTo, address underlyingTo) internal returns (uint256 rewardsAmt, uint256 underlyingAmt) {
-        require(rewardsTo != address(0), "VentureHandler/rewards-zero-address");
+        require(rewardsTo != address(0), "VentureHandler/rewardsTo-zero-address");
         require(underlyingTo != address(0), "VentureHandler/underlying-zero-address");
         require(locked == 0, "VentureHandler/queue-locked");
         Queue storage queue = isDeposit ? depositQueue : withdrawQueue;

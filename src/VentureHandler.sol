@@ -64,14 +64,14 @@ contract VentureHandler {
     struct Position {
         uint256 gen;        // Generation this position belongs to
         uint256 shares;     // Number of internal shares held
-        uint256 rewardDebt; // rewardPerToken snapshot at entry [wad]
+        uint256 rewardDebt; // rewardPerToken snapshot at entry [ray]
     }
 
     struct Queue {
         uint256 currentGen;
         uint256 totalShares;
         uint256 totalUnderlying;
-        mapping(uint256 gen => uint256) rewardPerToken; // Cumulative reward per internal share [wad]
+        mapping(uint256 gen => uint256) rewardPerToken; // Cumulative reward per internal share [ray]
         mapping(address usr => Position) positions;
     }
 
@@ -100,6 +100,9 @@ contract VentureHandler {
 
     uint256 constant WAD = 10 ** 18;
     uint256 constant RAY = 10 ** 27;
+    // Largest totalShares:totalUnderlying a generation may carry. Conversion is the only thing
+    // that raises it, so bounding the remainder a conversion may leave bounds the ratio itself.
+    uint256 constant MAX_SHARE_RATIO = 10 ** 9;
 
     // --- Events ---
 
@@ -164,7 +167,7 @@ contract VentureHandler {
         Position memory pos = queue.positions[owner];
         return (pos.shares == 0)
                 ? 0
-                : pos.shares * (queue.rewardPerToken[pos.gen] - pos.rewardDebt) / WAD;
+                : pos.shares * (queue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
     }
 
     function pendingDepositRewards(address owner) external view returns (uint256) {
@@ -307,7 +310,7 @@ contract VentureHandler {
 
     function _claimRewards(bool isDeposit, Queue storage queue, address owner, Position storage pos, address rewardsTo) internal returns (uint256 rewardsAmt) {
         uint256 rpt = queue.rewardPerToken[pos.gen];
-        rewardsAmt = pos.shares * (rpt - pos.rewardDebt) / WAD;
+        rewardsAmt = pos.shares * (rpt - pos.rewardDebt) / RAY;
         pos.rewardDebt = rpt;
 
         if (rewardsAmt > 0) {
@@ -426,8 +429,23 @@ contract VentureHandler {
             }
         }
 
-        // Nothing to convert: leave the generation untouched
-        if (converted == 0 || received == 0) {
+        // Never leave a remainder small enough to let totalShares/totalUnderlying run away: shares
+        // survive a conversion while underlying does not, so a sliver of leftover underlying mints
+        // an unbounded share count to the next joiner and truncates every later accrual to zero.
+        // Either drain the generation or leave enough behind to stay precise.
+        if (converted < totalUnderlying) {
+            uint256 minRemainder = queue.totalShares / MAX_SHARE_RATIO;
+            if (totalUnderlying - converted < minRemainder) {
+                converted = totalUnderlying > minRemainder ? totalUnderlying - minRemainder : 0;
+                received  = isDeposit ? converted * RAY / chi : converted * chi / RAY;
+            }
+        }
+
+        // Nothing to convert, or nothing creditable: leave the generation untouched. The third
+        // term is the one that matters -- underlying must never leave the queue uncredited.
+        // totalShares is 0 exactly when the generation is empty, which converted == 0 already covers
+        uint256 rewardPerTokenAdded = queue.totalShares == 0 ? 0 : received * RAY / queue.totalShares;
+        if (converted == 0 || received == 0 || rewardPerTokenAdded == 0) {
             emit Convert(isDeposit, queue.currentGen, capacity, 0, 0, false);
             return 0;
         }
@@ -442,7 +460,7 @@ contract VentureHandler {
         }
 
         // Update reward accumulator
-        queue.rewardPerToken[queue.currentGen] += received * WAD / queue.totalShares;
+        queue.rewardPerToken[queue.currentGen] += rewardPerTokenAdded;
 
         // Reduce underlying
         totalUnderlying -= converted;

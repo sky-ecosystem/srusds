@@ -339,7 +339,7 @@ abstract contract VentureQueueTestBase is DssTest {
         handler.settle();
 
         assertEq(_queueUnderlying(), 50e18);
-        assertEq(_rewardPerToken(0), 50e18 * WAD / 100e18); // 0.5 WAD
+        assertEq(_rewardPerToken(0), 50e18 * RAY / 100e18); // 0.5 RAY
     }
 
     function testConvertFullCapacity() public {
@@ -356,7 +356,7 @@ abstract contract VentureQueueTestBase is DssTest {
         assertEq(_queueUnderlying(), 0);
         assertEq(_queueGen(), 1);
         assertEq(_queueShares(), 0);
-        assertEq(_rewardPerToken(0), WAD); // Retained in finalized gen (100e18 received / 100e18 shares)
+        assertEq(_rewardPerToken(0), RAY); // Retained in finalized gen (100e18 received / 100e18 shares)
     }
 
     function testConvertExcessCapacity() public {

@@ -385,7 +385,7 @@ contract VentureHandler {
             _underlying(isDeposit).transfer(underlyingTo, underlyingAmt);
         }
 
-        emit Exit(isDeposit, owner, queue.currentGen, rewardsTo, rewardsAmt, underlyingTo, underlyingAmt);
+        emit Exit(isDeposit, owner, pos.gen, rewardsTo, rewardsAmt, underlyingTo, underlyingAmt);
     }
 
     function _claim(bool isDeposit, address owner, address rewardsTo) internal returns (uint256 rewardsAmt) {

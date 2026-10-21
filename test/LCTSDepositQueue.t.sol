@@ -510,7 +510,7 @@ contract LCTSDepositQueueTest is Test {
     function testClaimAndExitToZeroAddressReverts() public {
         _deposit(100e18, alice);
 
-        vm.expectRevert("LCTSQueueBase/rewards-zero-address");
+        vm.expectRevert("LCTSQueueBase/rewardsTo-zero-address");
         queue.claimAndExit(alice, address(0), alice);
     }
 

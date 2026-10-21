@@ -47,7 +47,7 @@ contract SrUsds is UUPSUpgradeable {
     mapping (address => uint256)                      public nonces;
     // Savings yield
     uint192 public chi;   // The Rate Accumulator [ray]
-    uint64  public rho;   // Time of last settle  [unix epoch time]
+    // uint64  public rho;   // Time of last settle  [unix epoch time]
 
     // --- Constants ---
 
@@ -100,7 +100,7 @@ contract SrUsds is UUPSUpgradeable {
         __UUPSUpgradeable_init();
 
         chi = uint192(RAY);
-        rho = uint64(block.timestamp);
+        // rho = uint64(block.timestamp);
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
     }
@@ -169,7 +169,7 @@ contract SrUsds is UUPSUpgradeable {
         newChi = chi = totalAssets_ > 0
                                ? _toUint192(oldChi * newTotalAssets / totalAssets_)
                                : 0;
-        rho = uint64(block.timestamp);
+        // rho = uint64(block.timestamp);
         emit Settle(assets, oldChi, newChi);
     }
 

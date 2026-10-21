@@ -114,7 +114,7 @@ abstract contract LCTSQueueBase {
     /// @return rewardsAmt Amount of rewards claimed
     function claimAndJoin(address owner, address rewardsTo, uint256 underlyingAmt) external auth returns (uint256 rewardsAmt) {
         require(owner != address(0), "LCTSQueueBase/owner-zero-address");
-        require(rewardsTo != address(0), "LCTSQueueBase/rewards-zero-address");
+        require(rewardsTo != address(0), "LCTSQueueBase/rewardsTo-zero-address");
         require(underlyingAmt > 0, "LCTSQueueBase/zero-underlyingAmt");
         require(locked == 0, "LCTSQueueBase/queue-locked");
 
@@ -153,7 +153,7 @@ abstract contract LCTSQueueBase {
     /// @return underlyingAmt Amount of underlying returned
     function claimAndExit(address owner, address rewardsTo, address underlyingTo) external auth returns (uint256 rewardsAmt, uint256 underlyingAmt) {
         require(owner != address(0), "LCTSQueueBase/owner-zero-address");
-        require(rewardsTo != address(0), "LCTSQueueBase/rewards-zero-address");
+        require(rewardsTo != address(0), "LCTSQueueBase/rewardsTo-zero-address");
         require(underlyingTo != address(0), "LCTSQueueBase/underlying-zero-address");
         require(locked == 0, "LCTSQueueBase/queue-locked");
         Position storage pos = positions[owner];

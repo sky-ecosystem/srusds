@@ -184,7 +184,7 @@ abstract contract LCTSQueueBase {
             _pushUnderlying(underlyingTo, underlyingAmt);
         }
 
-        emit Exit(owner, currentGen, rewardsTo, rewardsAmt, underlyingTo, underlyingAmt);
+        emit Exit(owner, pos.gen, rewardsTo, rewardsAmt, underlyingTo, underlyingAmt);
     }
 
     /// @notice Claim accrued rewards for a user

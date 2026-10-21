@@ -531,7 +531,9 @@ contract LCTSDepositQueueTest is Test {
         queue.claimAndExit(alice, alice, alice);
         assertEq(queue.currentGen(), 0);
 
-        // Bob exits — last user, gen should advance
+        // Bob exits — last user, gen should advance, but the exit is logged in his own gen
+        vm.expectEmit(true, true, true, true);
+        emit Exit(bob, 0, bob, 25e18, bob, 75e18);
         queue.claimAndExit(bob, bob, bob);
         assertEq(queue.currentGen(), 1);
         assertEq(queue.totalShares(), 0);

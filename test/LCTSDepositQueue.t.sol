@@ -607,8 +607,11 @@ contract LCTSDepositQueueTest is Test {
             assertEq(converted, depositAmt);
             assertEq(queue.currentGen(), 1);
         } else {
-            assertEq(converted, capacity);
-            assertEq(queue.totalUnderlying(), depositAmt - capacity);
+            // The remainder is floored at totalShares / MAX_SHARE_RATIO (shares == depositAmt here)
+            uint256 minRemainder = depositAmt / 1e9;
+            uint256 expected = depositAmt - capacity < minRemainder ? depositAmt - minRemainder : capacity;
+            assertEq(converted, expected);
+            assertEq(queue.totalUnderlying(), depositAmt - expected);
         }
     }
 }
@@ -880,8 +883,11 @@ contract LCTSWithdrawQueueTest is Test {
             assertEq(redeemed, depositAmt);
             assertEq(queue.currentGen(), 1);
         } else {
-            assertEq(redeemed, capacity);
-            assertEq(queue.totalUnderlying(), depositAmt - capacity);
+            // The remainder is floored at totalShares / MAX_SHARE_RATIO (shares == depositAmt here)
+            uint256 minRemainder = depositAmt / 1e9;
+            uint256 expected = depositAmt - capacity < minRemainder ? depositAmt - minRemainder : capacity;
+            assertEq(redeemed, expected);
+            assertEq(queue.totalUnderlying(), depositAmt - expected);
         }
     }
 }

@@ -18,7 +18,7 @@ pragma solidity ^0.8.21;
 
 interface HandlerLike {
     function lock() external;
-    function plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
+    function plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity) external;
 }
 
 contract LCTSBeam {
@@ -43,7 +43,7 @@ contract LCTSBeam {
     event Diss(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
     event Lock();
-    event Plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
+    event Plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity);
 
     // --- Modifiers ---
     modifier auth() {
@@ -117,21 +117,21 @@ contract LCTSBeam {
     }
 
     /// @notice Plan settlement parameters
-    /// @param settleAmt Amount to add (positive) or remove (negative) from vault backing
+    /// @param profit Amount to add (positive) or remove (negative) from vault backing
     /// @param depositCapacity Maximum underlying to convert via deposit queue
     /// @param withdrawCapacity Maximum vault shares to convert via withdraw queue
     function plan(
-        int256 settleAmt,
+        int256 profit,
         uint256 depositCapacity,
         uint256 withdrawCapacity
     ) external toll good {
-        require(settleAmt <= 0 || uint256(settleAmt) <= maxMint, "LCTSBeam/maxMint-exceed");
-        require(settleAmt >= 0 || uint256(-settleAmt) <= maxCut, "LCTSBeam/maxCut-exceed");
+        require(profit <= 0 || uint256(profit) <= maxMint, "LCTSBeam/maxMint-exceed");
+        require(profit >= 0 || uint256(-profit) <= maxCut, "LCTSBeam/maxCut-exceed");
         require(depositCapacity <= maxDepositCapacity, "LCTSBeam/maxDepositCapacity-exceed");
         require(withdrawCapacity <= maxWithdrawCapacity, "LCTSBeam/maxWithdrawCapacity-exceed");
 
-        handler.plan(settleAmt, depositCapacity, withdrawCapacity);
+        handler.plan(profit, depositCapacity, withdrawCapacity);
 
-        emit Plan(settleAmt, depositCapacity, withdrawCapacity);
+        emit Plan(profit, depositCapacity, withdrawCapacity);
     }
 }

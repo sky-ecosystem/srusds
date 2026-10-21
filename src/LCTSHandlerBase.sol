@@ -37,7 +37,7 @@ abstract contract LCTSHandlerBase {
     uint256 public lockTimeBgn;      // Time in the day when lock window opens  [seconds, e.g. 13 hours   == 13:00 UTC]
     uint256 public lockTimeEnd;      // Time in the day when lock window closes [seconds, e.g. 13.5 hours == 13:30 UTC]
     uint256 public settleTime;       // Time in the day when settlement can be executed [seconds, e.g. 16 hours == 16:00 UTC]
-    int256  public settleAmt;        // Underlying adjustment amount
+    int256  public profit;           // Underlying adjustment amount
     uint256 public depositCapacity;  // Deposit queue capacity
     uint256 public withdrawCapacity; // Withdraw queue capacity
 
@@ -52,7 +52,7 @@ abstract contract LCTSHandlerBase {
     event Deny(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
     event Lock();
-    event Plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity);
+    event Plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity);
     event Settle(uint256 depositsConverted, uint256 withdrawsConverted);
 
     // --- Modifiers ---
@@ -119,15 +119,15 @@ abstract contract LCTSHandlerBase {
 
     /// @notice Set settlement parameters
     function plan(
-        int256  settleAmt_,
+        int256  profit_,
         uint256 depositCapacity_,
         uint256 withdrawCapacity_
     ) external auth {
         require(locked == 1, "LCTSHandlerBase/not-locked");
-        settleAmt        = settleAmt_;
+        profit           = profit_;
         depositCapacity  = depositCapacity_;
         withdrawCapacity = withdrawCapacity_;
-        emit Plan(settleAmt_, depositCapacity_, withdrawCapacity_);
+        emit Plan(profit_, depositCapacity_, withdrawCapacity_);
     }
 
     /// @dev Called before queue settlement. Implement product-specific logic.
@@ -149,7 +149,7 @@ abstract contract LCTSHandlerBase {
 
         // Reset settlement params
         locked           = 0;
-        settleAmt        = 0;
+        profit           = 0;
         depositCapacity  = 0;
         withdrawCapacity = 0;
 

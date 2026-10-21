@@ -106,24 +106,24 @@ contract SrUsdsHandler is LCTSHandlerBase {
 
     // --- Internal Hooks ---
 
-    /// @dev Adjust srUSDS chi based on settleAmt before queue processing
+    /// @dev Adjust srUSDS chi based on profit before queue processing
     function _settle() internal override {
-        int256 settleAmt_ = settleAmt;
+        int256 profit_ = profit;
 
         // Mint sUSDS: suck USDS from vat, convert to sUSDS
-        if (settleAmt_ > 0) {
-            uint256 usdsAmt = susds.previewMint(uint256(settleAmt_));
+        if (profit_ > 0) {
+            uint256 usdsAmt = susds.previewMint(uint256(profit_));
             vat.suck(address(this), address(this), usdsAmt * RAY);
             usdsJoin.exit(address(this), usdsAmt);
-            susds.mint(uint256(settleAmt_), address(this));
+            susds.mint(uint256(profit_), address(this));
         }
 
         // Update chi on srUSDS
-        srusds.settle(settleAmt_);
+        srusds.settle(profit_);
 
         // Burn sUSDS: redeem to USDS, join back to vat
-        if (settleAmt_ < 0) {
-            uint256 usdsAmt = susds.redeem(uint256(-settleAmt_), address(this), address(this));
+        if (profit_ < 0) {
+            uint256 usdsAmt = susds.redeem(uint256(-profit_), address(this), address(this));
             usdsJoin.join(vow, usdsAmt);
         }
     }

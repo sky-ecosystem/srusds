@@ -21,7 +21,7 @@ interface AuthorityLike {
 }
 
 interface HandlerLike {
-    function plan(int256 settleAmt, uint256 depositCapacity, uint256 withdrawCapacity) external;
+    function plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity) external;
 }
 
 interface BeamLike {

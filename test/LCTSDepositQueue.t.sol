@@ -15,7 +15,7 @@ contract LCTSDepositQueueTest is Test {
     address alice = address(0xA11CE);
     address bob = address(0xB0B);
 
-    uint256 constant WAD = 1e18;
+    uint256 constant RAY = 1e27;
 
     event Rely(address indexed usr);
     event Deny(address indexed usr);
@@ -189,7 +189,7 @@ contract LCTSDepositQueueTest is Test {
 
         assertEq(converted, 50e18);
         assertEq(queue.totalUnderlying(), 50e18);
-        assertEq(queue.rewardPerToken(0), 50e18 * WAD / 100e18); // 0.5 WAD
+        assertEq(queue.rewardPerToken(0), 50e18 * RAY / 100e18); // 0.5 RAY
     }
 
     function testSettleFullCapacity() public {
@@ -204,7 +204,7 @@ contract LCTSDepositQueueTest is Test {
         assertEq(queue.totalUnderlying(), 0);
         assertEq(queue.currentGen(), 1);
         assertEq(queue.totalShares(), 0);
-        assertEq(queue.rewardPerToken(0), WAD); // Retained in finalized gen (100e18 received / 100e18 shares)
+        assertEq(queue.rewardPerToken(0), RAY); // Retained in finalized gen (100e18 received / 100e18 shares)
     }
 
     function testSettleExcessCapacity() public {

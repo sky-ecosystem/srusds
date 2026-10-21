@@ -29,6 +29,7 @@ interface IERC20 {
 
 interface IERC4626 is IERC20 {
     function asset() external view returns (address);
+    function convertToShares(uint256 assets) external view returns (uint256 shares);
     function deposit(uint256 assets, address receiver) external returns (uint256 shares);
 }
 
@@ -64,5 +65,9 @@ contract LCTSDepositQueue is LCTSQueueBase {
 
     function _convert(uint256 amount) internal override returns (uint256) {
         return vault.deposit(amount, address(this));
+    }
+
+    function _previewConvert(uint256 amount) internal view override returns (uint256) {
+        return vault.convertToShares(amount);
     }
 }

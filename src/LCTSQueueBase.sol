@@ -36,18 +36,21 @@ abstract contract LCTSQueueBase {
     uint256 public currentGen;
     uint256 public totalShares;
     uint256 public totalUnderlying;
-    mapping(uint256 gen => uint256) public rewardPerToken; // Cumulative reward per internal share [wad]
+    mapping(uint256 gen => uint256) public rewardPerToken; // Cumulative reward per internal share [ray]
     mapping(address => Position) public positions;
 
     struct Position {
         uint256 gen;        // Generation this position belongs to
         uint256 shares;     // Number of internal shares held
-        uint256 rewardDebt; // rewardPerToken snapshot at entry [wad]
+        uint256 rewardDebt; // rewardPerToken snapshot at entry [ray]
     }
 
     // --- Constants ---
 
-    uint256 constant WAD = 10 ** 18;
+    uint256 constant RAY = 10 ** 27;
+    // Largest totalShares:totalUnderlying a generation may carry. Conversion is the only thing
+    // that raises it, so bounding the remainder a conversion may leave bounds the ratio itself.
+    uint256 constant MAX_SHARE_RATIO = 10 ** 9;
 
     // --- Events ---
 
@@ -72,6 +75,7 @@ abstract contract LCTSQueueBase {
     function _pushUnderlying(address to, uint256 amount) internal virtual;
     function _pushReward(address to, uint256 amount) internal virtual;
     function _convert(uint256 amount) internal virtual returns (uint256 received);
+    function _previewConvert(uint256 amount) internal view virtual returns (uint256 received);
 
     // --- Auth Functions ---
 
@@ -94,7 +98,7 @@ abstract contract LCTSQueueBase {
 
     function _claimRewards(address owner, Position storage pos, address rewardsTo) internal returns (uint256 rewardsAmt) {
         uint256 rpt = rewardPerToken[pos.gen];
-        rewardsAmt = pos.shares * (rpt - pos.rewardDebt) / WAD;
+        rewardsAmt = pos.shares * (rpt - pos.rewardDebt) / RAY;
         pos.rewardDebt = rpt;
 
         if (rewardsAmt > 0) {
@@ -213,11 +217,32 @@ abstract contract LCTSQueueBase {
         // Determine conversion amount
         converted = capacity < totalUnderlying ? capacity : totalUnderlying;
 
+        // Never leave a remainder small enough to let totalShares/totalUnderlying run away: shares
+        // survive a conversion while underlying does not, so a sliver of leftover underlying mints
+        // an unbounded share count to the next joiner and truncates every later accrual to zero.
+        // Either drain the generation or leave enough behind to stay precise.
+        if (converted < totalUnderlying) {
+            uint256 minRemainder = totalShares / MAX_SHARE_RATIO;
+            if (totalUnderlying - converted < minRemainder) {
+                converted = totalUnderlying > minRemainder ? totalUnderlying - minRemainder : 0;
+            }
+        }
+
+        // Nothing to convert, or nothing creditable: leave the generation untouched. The third
+        // term is the one that matters -- underlying must never leave the queue uncredited.
+        // totalShares > 0 here, as totalUnderlying > 0 implies a non-empty generation
+        uint256 received = _previewConvert(converted);
+        if (converted == 0 || received == 0 || received * RAY / totalShares == 0) {
+            locked = 0;
+            emit Settle(currentGen, capacity, 0, 0, false);
+            return 0;
+        }
+
         // Execute conversion
-        uint256 received = _convert(converted);
+        received = _convert(converted);
 
         // Update reward accumulator
-        rewardPerToken[currentGen] += received * WAD / totalShares;
+        rewardPerToken[currentGen] += received * RAY / totalShares;
 
         // Reduce underlying
         totalUnderlying -= converted;
@@ -240,7 +265,7 @@ abstract contract LCTSQueueBase {
         Position memory pos = positions[owner];
         return (pos.shares == 0)
                 ? 0
-                : pos.shares * (rewardPerToken[pos.gen] - pos.rewardDebt) / WAD;
+                : pos.shares * (rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
     }
 
     function underlyingBalance(address owner) external view returns (uint256) {

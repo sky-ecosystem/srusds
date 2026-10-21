@@ -108,8 +108,6 @@ library SrUsdsInit {
         // --- Configure SrUsds permissions ---
         // Handler needs auth to call settle()
         SrUsdsLike(instance.srUsds).rely(instance.handler);
-        // Mom needs auth for emergency actions
-        SrUsdsLike(instance.srUsds).rely(instance.mom);
         // DepositQueue needs auth to call deposit() on SrUsds
         SrUsdsLike(instance.srUsds).rely(instance.depositQueue);
         // WithdrawQueue needs auth to call redeem() on SrUsds

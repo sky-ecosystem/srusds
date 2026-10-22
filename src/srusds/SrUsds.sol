@@ -157,6 +157,14 @@ contract SrUsds is UUPSUpgradeable {
     function settle(int256 assets) external auth returns (uint256 newChi) {
         uint256 oldChi = chi;
         uint256 totalAssets_ = totalSupply * oldChi / RAY;
+
+        // Nothing outstanding to revalue: keep chi, as it is a divisor everywhere. Checked before
+        // any transfer, so a non-zero amount here is a planning error rather than stranded backing
+        if (totalAssets_ == 0) {
+            require(assets == 0, "SrUsds/nothing-to-settle");
+            return oldChi;
+        }
+
         uint256 newTotalAssets;
         if (assets > 0) {
             susds.transferFrom(msg.sender, address(this), uint256(assets));
@@ -166,9 +174,9 @@ contract SrUsds is UUPSUpgradeable {
             susds.transfer(msg.sender, assets_);
             newTotalAssets = totalAssets_ - assets_;
         }
-        newChi = chi = totalAssets_ > 0
-                               ? _toUint192(oldChi * newTotalAssets / totalAssets_)
-                               : 0;
+        newChi = _toUint192(oldChi * newTotalAssets / totalAssets_);
+        if (newChi == 0) newChi = 1; // A total loss must still leave chi non-zero
+        chi = uint192(newChi);
         // rho = uint64(block.timestamp);
         emit Settle(assets, oldChi, newChi);
     }

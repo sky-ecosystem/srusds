@@ -29,9 +29,28 @@ interface IERC1271 {
     ) external view returns (bytes4);
 }
 
+interface VatLike {
+    function hope(address) external;
+    function suck(address, address, uint256) external;
+}
+
+interface UsdsJoinLike {
+    function vat() external view returns (address);
+    function usds() external view returns (address);
+    function join(address, uint256) external;
+    function exit(address, uint256) external;
+}
+
+interface UsdsLike {
+    function approve(address, uint256) external;
+}
+
 interface SUsdsLike {
     function transfer(address, uint256) external;
     function transferFrom(address, address, uint256) external;
+    function previewMint(uint256) external view returns (uint256);
+    function mint(uint256, address) external;
+    function redeem(uint256, address, address) external returns (uint256);
 }
 
 contract SrUsds is UUPSUpgradeable {
@@ -46,8 +65,7 @@ contract SrUsds is UUPSUpgradeable {
     mapping (address => mapping (address => uint256)) public allowance;
     mapping (address => uint256)                      public nonces;
     // Savings yield
-    uint192 public chi;   // The Rate Accumulator [ray]
-    // uint64  public rho;   // Time of last settle  [unix epoch time]
+    uint192 public chi;   // The Rate Accumulator  [ray]
 
     // --- Constants ---
 
@@ -58,26 +76,31 @@ contract SrUsds is UUPSUpgradeable {
     uint8   public constant decimals = 18;
     // Math
     uint256 private constant RAY = 10 ** 27;
-    // EIP712
-    bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
 
     // --- Immutables ---
 
-    SUsdsLike public immutable susds;
+    // EIP712
+    bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+    // Savings yield
+    UsdsJoinLike public immutable usdsJoin;
+    VatLike      public immutable vat;
+    UsdsLike     public immutable usds;
+    address      public immutable vow;
+    SUsdsLike    public immutable susds;
 
     // --- Events ---
 
     // Admin
     event Rely(address indexed usr);
     event Deny(address indexed usr);
-    event File(bytes32 indexed what, uint256 data);
-    event Settle(int256 assets, uint256 oldChi, uint256 newChi);
     // ERC20
     event Approval(address indexed owner, address indexed spender, uint256 value);
     event Transfer(address indexed from, address indexed to, uint256 value);
     // ERC4626
     event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
     event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
+    // Savings yield
+    event Settle(int256 assets, uint256 oldChi, uint256 newChi);
 
     // --- Modifiers ---
 
@@ -88,9 +111,13 @@ contract SrUsds is UUPSUpgradeable {
 
     // --- Constructor ---
 
-    constructor(address susds_) {
+    constructor(address usdsJoin_, address vow_, address susds_) {
         _disableInitializers(); // Avoid initializing in the context of the implementation
 
+        usdsJoin = UsdsJoinLike(usdsJoin_);
+        vat = VatLike(UsdsJoinLike(usdsJoin_).vat());
+        usds = UsdsLike(UsdsJoinLike(usdsJoin_).usds());
+        vow = vow_;
         susds = SUsdsLike(susds_);
     }
 
@@ -100,7 +127,9 @@ contract SrUsds is UUPSUpgradeable {
         __UUPSUpgradeable_init();
 
         chi = uint192(RAY);
-        // rho = uint64(block.timestamp);
+        vat.hope(address(usdsJoin));
+        usds.approve(address(susds), type(uint256).max);
+        usds.approve(address(usdsJoin), type(uint256).max);
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
     }
@@ -154,22 +183,36 @@ contract SrUsds is UUPSUpgradeable {
         emit Deny(usr);
     }
 
-    function settle(int256 assets) external auth returns (uint256 newChi) {
+    // --- Savings Rate Settlement external function ---
+
+    /// @notice Revalue the outstanding shares by `assets` sUSDS, minted from the Vat for gains and returned to the vow for losses
+    function settle(int256 assets) external auth {
         uint256 oldChi = chi;
         uint256 totalAssets_ = totalSupply * oldChi / RAY;
+
+        // Nothing outstanding to revalue: keep chi, as it is a divisor everywhere, and move no assets
+        if (totalAssets_ == 0 || assets == 0) return;
+
         uint256 newTotalAssets;
         if (assets > 0) {
-            susds.transferFrom(msg.sender, address(this), uint256(assets));
+            // Mint sUSDS: suck USDS from vat, convert to sUSDS
+            uint256 usdsAmt = susds.previewMint(uint256(assets));
+            vat.suck(address(this), address(this), usdsAmt * RAY);
+            usdsJoin.exit(address(this), usdsAmt);
+            susds.mint(uint256(assets), address(this));
             newTotalAssets = totalAssets_ + uint256(assets);
         } else {
+            // Burn sUSDS: redeem to USDS, join back to vat
             uint256 assets_ = _min(uint256(-assets), totalAssets_);
-            susds.transfer(msg.sender, assets_);
+            uint256 usdsAmt = susds.redeem(assets_, address(this), address(this));
+            usdsJoin.join(vow, usdsAmt);
             newTotalAssets = totalAssets_ - assets_;
         }
-        newChi = chi = totalAssets_ > 0
-                               ? _toUint192(oldChi * newTotalAssets / totalAssets_)
-                               : 0;
-        // rho = uint64(block.timestamp);
+
+        uint256 newChi = _toUint192(oldChi * newTotalAssets / totalAssets_);
+        if (newChi == 0) newChi = 1; // A total loss must still leave chi non-zero
+        chi = uint192(newChi);
+
         emit Settle(assets, oldChi, newChi);
     }
 
@@ -234,7 +277,7 @@ contract SrUsds is UUPSUpgradeable {
         unchecked {
             balanceOf[receiver] = balanceOf[receiver] + shares; // note: we don't need an overflow check here b/c balanceOf[receiver] <= totalSupply
         }
-        totalSupply = totalSupply + shares;
+        totalSupply = totalSupply + shares; // note: checked, as a chi driven down by losses can mint more shares than there are assets
 
         emit Deposit(msg.sender, receiver, assets, shares);
         emit Transfer(address(0), receiver, shares);
@@ -276,13 +319,17 @@ contract SrUsds is UUPSUpgradeable {
         return convertToAssets(totalSupply);
     }
 
-    function convertToShares(uint256 assets) external view returns (uint256) {
-        uint256 chi_ = chi;
-        return chi_ > 0 ? assets * RAY / chi_ : 0;
+    function convertToShares(uint256 assets) public view returns (uint256) {
+        return assets * RAY / chi;
     }
 
     function convertToAssets(uint256 shares) public view returns (uint256) {
         return shares * chi / RAY;
+    }
+
+    // Deposits and redemptions only happen through the LCTS queues
+    function maxDeposit(address) external pure returns (uint256) {
+        return 0;
     }
 
     function deposit(uint256 assets, address receiver) external auth returns (uint256 shares) {
@@ -290,9 +337,12 @@ contract SrUsds is UUPSUpgradeable {
         _mint(assets, shares, receiver);
     }
 
+    function maxRedeem(address) external pure returns (uint256) {
+        return 0;
+    }
+
     function redeem(uint256 shares, address receiver, address owner) external auth returns (uint256 assets) {
         assets = shares * chi / RAY;
-        require(assets > 0, "SrUsds/assets-zero");
         _burn(assets, shares, receiver, owner);
     }
 

@@ -16,9 +16,9 @@
 
 pragma solidity ^0.8.21;
 
-interface HandlerLike {
+interface QueuesLike {
     function lock() external;
-    function plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity) external;
+    function plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external;
 }
 
 contract LCTSBeam {
@@ -29,12 +29,12 @@ contract LCTSBeam {
     uint256 public maxMint;            // Max mint value [wad]
     uint256 public maxCut;             // Max cut value [wad]
     uint256 public maxDepositCapacity; // Max deposit queue capacity [wad]
-    uint256 public maxWithdrawCapacity;// Max withdraw queue capacity [wad]
+    uint256 public maxRedeemCapacity;  // Max redeem queue capacity [wad]
     uint256 public hop;                // Min period between settlements [days]
     uint256 public rho;                // Day of last lock [days since epoch]
 
     // --- Immutables ---
-    HandlerLike public immutable handler;
+    QueuesLike public immutable queues;
 
     // --- Events ---
     event Rely(address indexed usr);
@@ -43,7 +43,7 @@ contract LCTSBeam {
     event Diss(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
     event Lock();
-    event Plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity);
+    event Plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity);
 
     // --- Modifiers ---
     modifier auth() {
@@ -61,8 +61,8 @@ contract LCTSBeam {
         _;
     }
 
-    constructor(address _handler) {
-        handler = HandlerLike(_handler);
+    constructor(address _queues) {
+        queues = QueuesLike(_queues);
 
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
@@ -99,8 +99,8 @@ contract LCTSBeam {
             maxCut = data;
         } else if (what == "maxDepositCapacity") {
             maxDepositCapacity = data;
-        } else if (what == "maxWithdrawCapacity") {
-            maxWithdrawCapacity = data;
+        } else if (what == "maxRedeemCapacity") {
+            maxRedeemCapacity = data;
         } else if (what == "hop") {
             hop = data;
         } else revert("LCTSBeam/file-unrecognized-param");
@@ -112,26 +112,26 @@ contract LCTSBeam {
         uint256 day = block.timestamp / 1 days;
         require(day >= rho + hop, "LCTSBeam/too-soon");
         rho = day;
-        handler.lock();
+        queues.lock();
         emit Lock();
     }
 
     /// @notice Plan settlement parameters
     /// @param profit Amount to add (positive) or remove (negative) from vault backing
     /// @param depositCapacity Maximum underlying to convert via deposit queue
-    /// @param withdrawCapacity Maximum vault shares to convert via withdraw queue
+    /// @param redeemCapacity Maximum shares to convert via redeem queue
     function plan(
         int256 profit,
         uint256 depositCapacity,
-        uint256 withdrawCapacity
+        uint256 redeemCapacity
     ) external toll good {
         require(profit <= 0 || uint256(profit) <= maxMint, "LCTSBeam/maxMint-exceed");
         require(profit >= 0 || uint256(-profit) <= maxCut, "LCTSBeam/maxCut-exceed");
         require(depositCapacity <= maxDepositCapacity, "LCTSBeam/maxDepositCapacity-exceed");
-        require(withdrawCapacity <= maxWithdrawCapacity, "LCTSBeam/maxWithdrawCapacity-exceed");
+        require(redeemCapacity <= maxRedeemCapacity, "LCTSBeam/maxRedeemCapacity-exceed");
 
-        handler.plan(profit, depositCapacity, withdrawCapacity);
+        queues.plan(profit, depositCapacity, redeemCapacity);
 
-        emit Plan(profit, depositCapacity, withdrawCapacity);
+        emit Plan(profit, depositCapacity, redeemCapacity);
     }
 }

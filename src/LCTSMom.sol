@@ -20,8 +20,8 @@ interface AuthorityLike {
     function canCall(address, address, bytes4) external view returns (bool);
 }
 
-interface HandlerLike {
-    function plan(int256 profit, uint256 depositCapacity, uint256 withdrawCapacity) external;
+interface QueuesLike {
+    function plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external;
 }
 
 interface BeamLike {
@@ -35,7 +35,7 @@ contract LCTSMom {
     address public authority;
 
     // --- Immutables ---
-    HandlerLike immutable public handler;
+    QueuesLike immutable public queues;
 
     // --- Events ---
     event SetOwner(address indexed owner);
@@ -45,7 +45,7 @@ contract LCTSMom {
     event ZeroMaxMint(address indexed beam);
     event ZeroMaxCut(address indexed beam);
     event ZeroMaxDepositCapacity(address indexed beam);
-    event ZeroMaxWithdrawCapacity(address indexed beam);
+    event ZeroMaxRedeemCapacity(address indexed beam);
     event ZeroSettle();
 
     // --- Modifiers ---
@@ -59,8 +59,8 @@ contract LCTSMom {
         _;
     }
 
-    constructor(address handler_) {
-        handler = HandlerLike(handler_);
+    constructor(address queues_) {
+        queues = QueuesLike(queues_);
 
         owner = msg.sender;
         emit SetOwner(msg.sender);
@@ -114,14 +114,14 @@ contract LCTSMom {
         emit ZeroMaxDepositCapacity(beam);
     }
 
-    function zeroMaxWithdrawCapacity(address beam) external auth {
-        BeamLike(beam).file("maxWithdrawCapacity", 0);
-        emit ZeroMaxWithdrawCapacity(beam);
+    function zeroMaxRedeemCapacity(address beam) external auth {
+        BeamLike(beam).file("maxRedeemCapacity", 0);
+        emit ZeroMaxRedeemCapacity(beam);
     }
 
     /// @notice Emergency action to zero all settlement parameters
     function zeroSettle() external auth {
-        handler.plan(0, 0, 0);
+        queues.plan(0, 0, 0);
         emit ZeroSettle();
     }
 }

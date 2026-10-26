@@ -29,8 +29,6 @@ interface TokenLike {
 
 interface ShareLike is TokenLike {
     function asset() external view returns (address);
-    function convertToShares(uint256) external view returns (uint256);
-    function convertToAssets(uint256) external view returns (uint256);
     function deposit(uint256, address) external returns (uint256);
     function redeem(uint256, address, address) external returns (uint256);
     function settle(int256) external;
@@ -198,10 +196,10 @@ contract LCTSQueues is UUPSUpgradeable {
 
         converted = capacity < totalUnderlying ? capacity : totalUnderlying;
 
-        // Never leave a remainder small enough to let totalShares/totalUnderlying run away: shares
-        // survive a conversion while underlying does not, so a sliver of leftover underlying mints
-        // an unbounded share count to the next joiner and truncates every later accrual to zero.
-        // Either drain the generation or leave enough behind to stay precise.
+        // A conversion removes underlying but keeps all shares, so the shares per unit of underlying go up.
+        // With only a tiny remainder left, the next joiner would get a huge number of shares and every later
+        // reward per share would round down to zero. So either drain the generation completely or leave at
+        // least totalShares / MAX_SHARE_RATIO behind.
         if (converted < totalUnderlying) {
             uint256 minRemainder = totalShares / MAX_SHARE_RATIO;
             if (totalUnderlying - converted < minRemainder) {
@@ -209,12 +207,8 @@ contract LCTSQueues is UUPSUpgradeable {
             }
         }
 
+        // Nothing to convert (empty queue or no capacity); also avoids dividing by totalShares == 0 below
         if (converted == 0) return (0, 0);
-
-        // Nothing creditable: leave the generation untouched, as underlying must never leave the
-        // queue uncredited. totalShares > 0 here, as totalUnderlying > 0 implies a non-empty generation
-        received = underlying == asset ? share.convertToShares(converted) : share.convertToAssets(converted);
-        if (received * RAY / totalShares == 0) return (0, 0);
 
         received = underlying == asset
                    ? share.deposit(converted, address(this))

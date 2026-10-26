@@ -334,9 +334,7 @@ contract LCTSQueues is UUPSUpgradeable {
         }
 
         // Return the pending amount
-        if (amount > 0) {
-            token.transfer(receiver, amount);
-        }
+        token.transfer(receiver, amount);
     }
 
     function _claim(Queue storage queue, TokenLike token, uint256 amount, address receiver) internal returns (uint256 claimed) {
@@ -348,9 +346,7 @@ contract LCTSQueues is UUPSUpgradeable {
         require(claimed <= pos.claimable, "LCTSQueues/insufficient-claimable");
         pos.claimable -= claimed;
 
-        if (claimed > 0) {
-            token.transfer(receiver, claimed);
-        }
+        token.transfer(receiver, claimed);
     }
 
     // --- User Functions ---

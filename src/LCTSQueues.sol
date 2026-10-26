@@ -44,8 +44,9 @@ interface ShareLike is TokenLike {
 ///      of its outstanding supply. On settlement the share is revalued (settle) and each queue converts up to
 ///      its planned capacity through the share's deposit/redeem.
 ///
-///      Deviations from ERC-7540: the request owner is always msg.sender (no separate controller, no operators), claims are in output units only,
-///      and cancellation is synchronous.
+///      Roles as in ERC-7540: `owner` provides the tokens of a request, `controller` owns the request (its pending and
+///      claimable amounts) and is the only one, besides its operators, who can cancel or claim it, and `receiver` gets
+///      the tokens on cancel or claim. An operator approved through setOperator can act as owner or controller.
 ///
 ///      Both queues implement the generation-based model where all requests in the same generation share
 ///      proportionally in the conversion capacity allocated to that generation.
@@ -82,6 +83,8 @@ contract LCTSQueues is UUPSUpgradeable {
     Queue public depositQueue;       // Underlying = assets, reward = shares (getter: currentGen, totalShares, totalUnderlying)
     Queue public redeemQueue;        // Underlying = shares, reward = assets (getter: currentGen, totalShares, totalUnderlying)
 
+    mapping(address controller => mapping(address operator => bool)) public isOperator;
+
     // --- Immutables ---
 
     ShareLike public immutable share;
@@ -102,12 +105,13 @@ contract LCTSQueues is UUPSUpgradeable {
     event Lock();
     event Plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity);
     event Settle(uint256 depositsConverted, uint256 depositsReceived, uint256 redeemsConverted, uint256 redeemsReceived);
-    event DepositRequest(address indexed owner, uint256 indexed gen, uint256 assets, uint256 queueShares);
-    event RedeemRequest(address indexed owner, uint256 indexed gen, uint256 shares, uint256 queueShares);
-    event CancelDeposit(address indexed owner, uint256 indexed gen, address receiver, uint256 assets);
-    event CancelRedeem(address indexed owner, uint256 indexed gen, address receiver, uint256 shares);
-    event ClaimDeposit(address indexed owner, address receiver, uint256 shares);
-    event ClaimRedeem(address indexed owner, address receiver, uint256 assets);
+    event SetOperator(address indexed controller, address indexed operator, bool approved);
+    event QueueDeposit(address indexed controller, address indexed owner, address sender, uint256 assets);
+    event QueueRedeem(address indexed controller, address indexed owner, address sender, uint256 shares);
+    event CancelDeposit(address indexed controller, address indexed receiver, address sender, uint256 assets);
+    event CancelRedeem(address indexed controller, address indexed receiver, address sender, uint256 shares);
+    event ClaimDeposit(address indexed controller, address indexed receiver, address sender, uint256 shares);
+    event ClaimRedeem(address indexed controller, address indexed receiver, address sender, uint256 assets);
 
     // --- Modifiers ---
 
@@ -275,25 +279,32 @@ contract LCTSQueues is UUPSUpgradeable {
         pos.rewardDebt = rpt;
     }
 
-    function _request(Queue storage queue, TokenLike token, uint256 amount) internal returns (uint256 gen, uint256 queueShares) {
+    /// @dev msg.sender must be `usr` or an operator approved by `usr`
+    function _checkOperator(address usr) internal view {
+        require(usr == msg.sender || isOperator[usr][msg.sender], "LCTSQueues/not-operator");
+    }
+
+    function _queue(Queue storage queue, TokenLike token, uint256 amount, address controller, address owner) internal {
+        _checkOperator(owner);
+        require(controller != address(0), "LCTSQueues/controller-zero-address");
         require(amount > 0, "LCTSQueues/zero-amount");
         require(locked == 0, "LCTSQueues/queue-locked");
 
-        Position storage pos = queue.positions[msg.sender];
+        Position storage pos = queue.positions[controller];
 
         _checkpoint(queue, pos);
 
-        // Escrow the request
-        token.transferFrom(msg.sender, address(this), amount);
+        // Escrow the queued amount from the owner
+        token.transferFrom(owner, address(this), amount);
 
         // Calculate internal queue shares to mint
-        queueShares = queue.totalShares == 0
-                      ? amount
-                      : amount * queue.totalShares / queue.totalUnderlying;
+        uint256 queueShares = queue.totalShares == 0
+                              ? amount
+                              : amount * queue.totalShares / queue.totalUnderlying;
         require(queueShares > 0, "LCTSQueues/zero-shares");
 
         // Update state
-        gen = queue.currentGen;
+        uint256 gen = queue.currentGen;
         queue.totalUnderlying += amount;
         queue.totalShares += queueShares;
         if (pos.gen < gen) {
@@ -306,12 +317,12 @@ contract LCTSQueues is UUPSUpgradeable {
         }
     }
 
-    function _cancel(Queue storage queue, TokenLike token, address receiver) internal returns (uint256 gen, uint256 amount) {
+    function _cancel(Queue storage queue, TokenLike token, address receiver, address controller) internal returns (uint256 amount) {
+        _checkOperator(controller);
         require(receiver != address(0), "LCTSQueues/receiver-zero-address");
         require(locked == 0, "LCTSQueues/queue-locked");
-        Position storage pos = queue.positions[msg.sender];
-        gen = queue.currentGen;
-        require(pos.gen == gen, "LCTSQueues/not-current-gen");
+        Position storage pos = queue.positions[controller];
+        require(pos.gen == queue.currentGen, "LCTSQueues/not-current-gen");
         require(pos.shares > 0, "LCTSQueues/zero-shares");
 
         // Keep whatever already converted claimable
@@ -327,7 +338,7 @@ contract LCTSQueues is UUPSUpgradeable {
         // Clear shares
         pos.shares = 0;
 
-        // If last owner cancels, advance generation
+        // If last controller cancels, advance generation
         if (queue.totalShares == 0) {
             queue.currentGen++;
             queue.totalUnderlying = 0;
@@ -337,9 +348,10 @@ contract LCTSQueues is UUPSUpgradeable {
         token.transfer(receiver, amount);
     }
 
-    function _claim(Queue storage queue, TokenLike token, uint256 amount, address receiver) internal returns (uint256 claimed) {
+    function _claim(Queue storage queue, TokenLike token, uint256 amount, address receiver, address controller) internal returns (uint256 claimed) {
+        _checkOperator(controller);
         require(receiver != address(0), "LCTSQueues/receiver-zero-address");
-        Position storage pos = queue.positions[msg.sender];
+        Position storage pos = queue.positions[controller];
 
         _checkpoint(queue, pos);
         claimed = amount == type(uint256).max ? pos.claimable : amount;
@@ -351,42 +363,47 @@ contract LCTSQueues is UUPSUpgradeable {
 
     // --- User Functions ---
 
-    /// @notice Request a deposit of `assets`
-    function requestDeposit(uint256 assets) external {
-        (uint256 gen, uint256 queueShares) = _request(depositQueue, asset, assets);
-        emit DepositRequest(msg.sender, gen, assets, queueShares);
+    /// @notice Approve or revoke `operator` to request, cancel and claim on behalf of msg.sender
+    function setOperator(address operator, bool approved) external returns (bool) {
+        isOperator[msg.sender][operator] = approved;
+        emit SetOperator(msg.sender, operator, approved);
+        return true;
     }
 
-    /// @notice Request a redeem of `shares`
-    function requestRedeem(uint256 shares) external {
-        (uint256 gen, uint256 queueShares) = _request(redeemQueue, share, shares);
-        emit RedeemRequest(msg.sender, gen, shares, queueShares);
+    /// @notice Queue a deposit of `assets` taken from `owner`, credited to `controller`
+    function queueDeposit(uint256 assets, address controller, address owner) external {
+        _queue(depositQueue, asset, assets, controller, owner);
+        emit QueueDeposit(controller, owner, msg.sender, assets);
     }
 
-    /// @notice Cancel the pending deposit request, returning its pending assets to `receiver` (anything converted stays claimable)
-    function cancelDeposit(address receiver) external returns (uint256 assets) {
-        uint256 gen;
-        (gen, assets) = _cancel(depositQueue, asset, receiver);
-        emit CancelDeposit(msg.sender, gen, receiver, assets);
+    /// @notice Queue a redeem of `shares` taken from `owner`, credited to `controller`
+    function queueRedeem(uint256 shares, address controller, address owner) external {
+        _queue(redeemQueue, share, shares, controller, owner);
+        emit QueueRedeem(controller, owner, msg.sender, shares);
     }
 
-    /// @notice Cancel the pending redeem request, returning its pending shares to `receiver` (anything converted stays claimable)
-    function cancelRedeem(address receiver) external returns (uint256 shares) {
-        uint256 gen;
-        (gen, shares) = _cancel(redeemQueue, share, receiver);
-        emit CancelRedeem(msg.sender, gen, receiver, shares);
+    /// @notice Cancel `controller`'s pending deposit request, returning its pending assets to `receiver` (anything converted stays claimable)
+    function cancelDeposit(address receiver, address controller) external returns (uint256 assets) {
+        assets = _cancel(depositQueue, asset, receiver, controller);
+        emit CancelDeposit(controller, receiver, msg.sender, assets);
     }
 
-    /// @notice Claim `shares` converted from deposit requests (type(uint256).max claims all)
-    function claimDeposit(uint256 shares, address receiver) external returns (uint256 claimed) {
-        claimed = _claim(depositQueue, share, shares, receiver);
-        emit ClaimDeposit(msg.sender, receiver, claimed);
+    /// @notice Cancel `controller`'s pending redeem request, returning its pending shares to `receiver` (anything converted stays claimable)
+    function cancelRedeem(address receiver, address controller) external returns (uint256 shares) {
+        shares = _cancel(redeemQueue, share, receiver, controller);
+        emit CancelRedeem(controller, receiver, msg.sender, shares);
     }
 
-    /// @notice Claim `assets` converted from redeem requests (type(uint256).max claims all)
-    function claimRedeem(uint256 assets, address receiver) external returns (uint256 claimed) {
-        claimed = _claim(redeemQueue, asset, assets, receiver);
-        emit ClaimRedeem(msg.sender, receiver, claimed);
+    /// @notice Claim `shares` converted from `controller`'s deposit requests to `receiver` (type(uint256).max claims all)
+    function claimDeposit(uint256 shares, address receiver, address controller) external returns (uint256 claimed) {
+        claimed = _claim(depositQueue, share, shares, receiver, controller);
+        emit ClaimDeposit(controller, receiver, msg.sender, claimed);
+    }
+
+    /// @notice Claim `assets` converted from `controller`'s redeem requests to `receiver` (type(uint256).max claims all)
+    function claimRedeem(uint256 assets, address receiver, address controller) external returns (uint256 claimed) {
+        claimed = _claim(redeemQueue, asset, assets, receiver, controller);
+        emit ClaimRedeem(controller, receiver, msg.sender, claimed);
     }
 
     // --- View Functions ---
@@ -394,26 +411,26 @@ contract LCTSQueues is UUPSUpgradeable {
     // Pending: a position with shares in the current generation is part of totalShares, so it is non-zero there
 
     /// @notice Assets still waiting to be converted to shares
-    function pendingDeposit(address owner) external view returns (uint256) {
-        Position memory pos = depositQueue.positions[owner];
+    function pendingDeposit(address controller) external view returns (uint256) {
+        Position memory pos = depositQueue.positions[controller];
         return (pos.shares == 0 || pos.gen < depositQueue.currentGen) ? 0 : pos.shares * depositQueue.totalUnderlying / depositQueue.totalShares;
     }
 
     /// @notice Shares still waiting to be converted to assets
-    function pendingRedeem(address owner) external view returns (uint256) {
-        Position memory pos = redeemQueue.positions[owner];
+    function pendingRedeem(address controller) external view returns (uint256) {
+        Position memory pos = redeemQueue.positions[controller];
         return (pos.shares == 0 || pos.gen < redeemQueue.currentGen) ? 0 : pos.shares * redeemQueue.totalUnderlying / redeemQueue.totalShares;
     }
 
     /// @notice Shares converted from deposits and ready to claim
-    function claimableDeposit(address owner) external view returns (uint256) {
-        Position memory pos = depositQueue.positions[owner];
+    function claimableDeposit(address controller) external view returns (uint256) {
+        Position memory pos = depositQueue.positions[controller];
         return pos.claimable + pos.shares * (depositQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
     }
 
     /// @notice Assets converted from redeems and ready to claim
-    function claimableRedeem(address owner) external view returns (uint256) {
-        Position memory pos = redeemQueue.positions[owner];
+    function claimableRedeem(address controller) external view returns (uint256) {
+        Position memory pos = redeemQueue.positions[controller];
         return pos.claimable + pos.shares * (redeemQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
     }
 }

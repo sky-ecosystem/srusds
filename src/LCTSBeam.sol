@@ -17,8 +17,7 @@
 pragma solidity ^0.8.21;
 
 interface QueuesLike {
-    function lock() external;
-    function plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external;
+    function settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external;
 }
 
 contract LCTSBeam {
@@ -31,7 +30,7 @@ contract LCTSBeam {
     uint256 public maxDepositCapacity; // Max deposit queue capacity [wad]
     uint256 public maxRedeemCapacity;  // Max redeem queue capacity [wad]
     uint256 public hop;                // Min period between settlements [days]
-    uint256 public rho;                // Day of last lock [days since epoch]
+    uint256 public rho;                // Day of last settlement [days since epoch]
 
     // --- Immutables ---
     QueuesLike public immutable queues;
@@ -42,8 +41,7 @@ contract LCTSBeam {
     event Kiss(address indexed usr);
     event Diss(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
-    event Lock();
-    event Plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity);
+    event Settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity);
 
     // --- Modifiers ---
     modifier auth() {
@@ -107,31 +105,25 @@ contract LCTSBeam {
         emit File(what, data);
     }
 
-    /// @notice Lock both queues
-    function lock() external toll good {
-        uint256 day = block.timestamp / 1 days;
-        require(day >= rho + hop, "LCTSBeam/too-soon");
-        rho = day;
-        queues.lock();
-        emit Lock();
-    }
-
-    /// @notice Plan settlement parameters
+    /// @notice Settle the queues within the facilitator's limits
     /// @param profit Amount to add (positive) or remove (negative) from vault backing
     /// @param depositCapacity Maximum underlying to convert via deposit queue
     /// @param redeemCapacity Maximum shares to convert via redeem queue
-    function plan(
+    function settle(
         int256 profit,
         uint256 depositCapacity,
         uint256 redeemCapacity
     ) external toll good {
+        uint256 day = block.timestamp / 1 days;
+        require(day >= rho + hop, "LCTSBeam/too-soon");
         require(profit <= 0 || uint256(profit) <= maxMint, "LCTSBeam/maxMint-exceed");
         require(profit >= 0 || uint256(-profit) <= maxCut, "LCTSBeam/maxCut-exceed");
         require(depositCapacity <= maxDepositCapacity, "LCTSBeam/maxDepositCapacity-exceed");
         require(redeemCapacity <= maxRedeemCapacity, "LCTSBeam/maxRedeemCapacity-exceed");
+        rho = day;
 
-        queues.plan(profit, depositCapacity, redeemCapacity);
+        queues.settle(profit, depositCapacity, redeemCapacity);
 
-        emit Plan(profit, depositCapacity, redeemCapacity);
+        emit Settle(profit, depositCapacity, redeemCapacity);
     }
 }

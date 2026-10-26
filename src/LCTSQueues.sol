@@ -37,7 +37,7 @@ interface ShareLike is TokenLike {
 }
 
 /// @title LCTSQueues
-/// @notice Asynchronous deposit and redeem requests, settled in a daily lock/plan/settle cycle, for a single share token
+/// @notice Asynchronous deposit and redeem requests, settled once per daily window, for a single share token
 /// @dev Loosely follows ERC-7540/ERC-7575: this contract is the vault users request, cancel and claim on, and
 ///      `share` is the separate share token. It holds everything owed to users: pending assets, pending
 ///      (escrowed) shares, and claimable shares/assets not yet claimed. The share token only holds the backing
@@ -72,13 +72,9 @@ contract LCTSQueues is UUPSUpgradeable {
     // --- Storage Variables ---
 
     mapping(address usr => uint256 allowed) public wards;
-    uint256 public locked;           // 0 == unlocked, 1 == locked
-    uint256 public lockTimeBgn;      // Time in the day when lock window opens  [seconds, e.g. 13 hours   == 13:00 UTC]
-    uint256 public lockTimeEnd;      // Time in the day when lock window closes [seconds, e.g. 13.5 hours == 13:30 UTC]
-    uint256 public settleTime;       // Time in the day when settlement can be executed [seconds, e.g. 16 hours == 16:00 UTC]
-    int256  public profit;           // Underlying adjustment amount
-    uint256 public depositCapacity;  // Deposit queue capacity [assets]
-    uint256 public redeemCapacity;   // Redeem queue capacity  [shares]
+    uint256 public lockTimeBgn;      // Time in the day when the settlement window opens  [seconds, e.g. 13 hours == 13:00 UTC]
+    uint256 public lockTimeEnd;      // Time in the day when the settlement window closes [seconds, e.g. 16 hours == 16:00 UTC]
+    uint256 public lastSettleDay;    // Day of the last settlement [days since epoch]
 
     Queue public depositQueue;       // Underlying = assets, reward = shares (getter: currentGen, totalShares, totalUnderlying)
     Queue public redeemQueue;        // Underlying = shares, reward = assets (getter: currentGen, totalShares, totalUnderlying)
@@ -102,9 +98,7 @@ contract LCTSQueues is UUPSUpgradeable {
     event Rely(address indexed usr);
     event Deny(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
-    event Lock();
-    event Plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity);
-    event Settle(uint256 depositsConverted, uint256 depositsReceived, uint256 redeemsConverted, uint256 redeemsReceived);
+    event Settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity, uint256 depositsConverted, uint256 depositsReceived, uint256 redeemsConverted, uint256 redeemsReceived);
     event SetOperator(address indexed controller, address indexed operator, bool approved);
     event QueueDeposit(address indexed controller, address indexed owner, address sender, uint256 assets);
     event QueueRedeem(address indexed controller, address indexed owner, address sender, uint256 shares);
@@ -164,45 +158,21 @@ contract LCTSQueues is UUPSUpgradeable {
             require(data < lockTimeEnd, "LCTSQueues/not-less-lock-end");
             lockTimeBgn = data;
         } else if (what == "lockTimeEnd") {
-            require(data < 1 days, "LCTSQueues/incorrect-time-in-day");
+            require(data <= 1 days, "LCTSQueues/incorrect-time-in-day");
             require(data > lockTimeBgn, "LCTSQueues/not-greater-lock-bgn");
-            require(data < settleTime, "LCTSQueues/not-less-settle");
             lockTimeEnd = data;
-        } else if (what == "settleTime") {
-            require(data < 1 days, "LCTSQueues/incorrect-time-in-day");
-            require(data > lockTimeEnd, "LCTSQueues/not-greater-lock-end");
-            settleTime = data;
         } else revert("LCTSQueues/file-unrecognized-param");
         emit File(what, data);
     }
 
-    /// @notice Lock both queues, preventing requests and cancellations
-    function lock() external auth {
-        require(locked == 0, "LCTSQueues/already-locked");
-        uint256 lockTimestampBgn = (block.timestamp / 1 days) * 1 days + lockTimeBgn;
-        uint256 lockTimestampEnd = (block.timestamp / 1 days) * 1 days + lockTimeEnd;
-        require(block.timestamp >= lockTimestampBgn, "LCTSQueues/lock-too-early");
-        require(block.timestamp <= lockTimestampEnd, "LCTSQueues/lock-too-late");
-
-        locked = 1;
-
-        emit Lock();
-    }
-
-    /// @notice Set settlement parameters
-    function plan(
-        int256  profit_,
-        uint256 depositCapacity_,
-        uint256 redeemCapacity_
-    ) external auth {
-        require(locked == 1, "LCTSQueues/not-locked");
-        profit          = profit_;
-        depositCapacity = depositCapacity_;
-        redeemCapacity  = redeemCapacity_;
-        emit Plan(profit_, depositCapacity_, redeemCapacity_);
-    }
-
     // --- Settlement ---
+
+    /// @dev Inside today's settlement window and not yet settled today: requests and cancellations are closed
+    ///      and settle() can be called. Settling reopens the queues for the rest of the window
+    function _locked() internal view returns (bool) {
+        uint256 time = block.timestamp % 1 days;
+        return time >= lockTimeBgn && time < lockTimeEnd && lastSettleDay < block.timestamp / 1 days;
+    }
 
     /// @dev Convert up to capacity of a queue's underlying into its reward through the share token:
     ///      asset into shares for the deposit queue, shares into asset for the redeem queue
@@ -248,26 +218,19 @@ contract LCTSQueues is UUPSUpgradeable {
         }
     }
 
-    /// @notice Settle the current cycle
-    function settle() external {
-        uint256 settleTimestamp = (block.timestamp / 1 days) * 1 days + settleTime;
-        require(locked == 1, "LCTSQueues/not-locked");
-        require(block.timestamp >= settleTimestamp, "LCTSQueues/settle-too-early");
+    /// @notice Revalue the share by `profit` and convert both queues up to the given capacities, once per window
+    function settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external auth {
+        require(_locked(), "LCTSQueues/not-locked");
+        lastSettleDay = block.timestamp / 1 days;
 
         // Revalue the outstanding shares before converting at the new price
         share.settle(profit);
 
-        // Convert both queues up to their planned capacity
+        // Convert both queues up to their capacity
         (uint256 depositsConverted, uint256 depositsReceived) = _convert(depositQueue, asset, depositCapacity);
         (uint256 redeemsConverted,  uint256 redeemsReceived)  = _convert(redeemQueue, share, redeemCapacity);
 
-        // Reset settlement params
-        locked          = 0;
-        profit          = 0;
-        depositCapacity = 0;
-        redeemCapacity  = 0;
-
-        emit Settle(depositsConverted, depositsReceived, redeemsConverted, redeemsReceived);
+        emit Settle(profit, depositCapacity, redeemCapacity, depositsConverted, depositsReceived, redeemsConverted, redeemsReceived);
     }
 
     // --- Internal Queue Logic ---
@@ -288,7 +251,7 @@ contract LCTSQueues is UUPSUpgradeable {
         _checkOperator(owner);
         require(controller != address(0), "LCTSQueues/controller-zero-address");
         require(amount > 0, "LCTSQueues/zero-amount");
-        require(locked == 0, "LCTSQueues/queue-locked");
+        require(!_locked(), "LCTSQueues/queue-locked");
 
         Position storage pos = queue.positions[controller];
 
@@ -320,7 +283,7 @@ contract LCTSQueues is UUPSUpgradeable {
     function _cancel(Queue storage queue, TokenLike token, address receiver, address controller) internal returns (uint256 amount) {
         _checkOperator(controller);
         require(receiver != address(0), "LCTSQueues/receiver-zero-address");
-        require(locked == 0, "LCTSQueues/queue-locked");
+        require(!_locked(), "LCTSQueues/queue-locked");
         Position storage pos = queue.positions[controller];
         require(pos.gen == queue.currentGen, "LCTSQueues/not-current-gen");
         require(pos.shares > 0, "LCTSQueues/zero-shares");
@@ -407,6 +370,11 @@ contract LCTSQueues is UUPSUpgradeable {
     }
 
     // --- View Functions ---
+
+    /// @notice Whether requests and cancellations are currently closed: inside today's settlement window and not yet settled today
+    function locked() external view returns (bool) {
+        return _locked();
+    }
 
     // Pending: a position with shares in the current generation is part of totalShares, so it is non-zero there
 

@@ -20,10 +20,6 @@ interface AuthorityLike {
     function canCall(address, address, bytes4) external view returns (bool);
 }
 
-interface QueuesLike {
-    function plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external;
-}
-
 interface BeamLike {
     function diss(address) external;
     function file(bytes32, uint256) external;
@@ -34,9 +30,6 @@ contract LCTSMom {
     address public owner;
     address public authority;
 
-    // --- Immutables ---
-    QueuesLike immutable public queues;
-
     // --- Events ---
     event SetOwner(address indexed owner);
     event SetAuthority(address indexed authority);
@@ -46,7 +39,6 @@ contract LCTSMom {
     event ZeroMaxCut(address indexed beam);
     event ZeroMaxDepositCapacity(address indexed beam);
     event ZeroMaxRedeemCapacity(address indexed beam);
-    event ZeroSettle();
 
     // --- Modifiers ---
     modifier onlyOwner() {
@@ -59,9 +51,7 @@ contract LCTSMom {
         _;
     }
 
-    constructor(address queues_) {
-        queues = QueuesLike(queues_);
-
+    constructor() {
         owner = msg.sender;
         emit SetOwner(msg.sender);
     }
@@ -117,11 +107,5 @@ contract LCTSMom {
     function zeroMaxRedeemCapacity(address beam) external auth {
         BeamLike(beam).file("maxRedeemCapacity", 0);
         emit ZeroMaxRedeemCapacity(beam);
-    }
-
-    /// @notice Emergency action to zero all settlement parameters
-    function zeroSettle() external auth {
-        queues.plan(0, 0, 0);
-        emit ZeroSettle();
     }
 }

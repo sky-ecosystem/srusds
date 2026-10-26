@@ -104,6 +104,7 @@ contract LCTSQueues is UUPSUpgradeable {
     event Settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity, uint256 depositsConverted, uint256 depositsReceived, uint256 redeemsConverted, uint256 redeemsReceived);
     event SetOperator(address indexed controller, address indexed operator, bool approved);
     event QueueDeposit(address indexed controller, address indexed owner, address sender, uint256 assets);
+    event Referral(address indexed controller, uint256 assets, uint16 indexed referral);
     event QueueRedeem(address indexed controller, address indexed owner, address sender, uint256 shares);
     event CancelDeposit(address indexed controller, address indexed receiver, address sender, uint256 assets);
     event CancelRedeem(address indexed controller, address indexed receiver, address sender, uint256 shares);
@@ -349,9 +350,11 @@ contract LCTSQueues is UUPSUpgradeable {
     }
 
     /// @notice Queue a deposit of `assets` taken from `owner`, credited to `controller`
-    function queueDeposit(uint256 assets, address controller, address owner) external {
+    /// @param referral Referral code for attribution, emitted in a Referral event (0 if none)
+    function queueDeposit(uint256 assets, address controller, address owner, uint16 referral) external {
         _queue(depositQueue, asset, assets, controller, owner);
         emit QueueDeposit(controller, owner, msg.sender, assets);
+        emit Referral(controller, assets, referral);
     }
 
     /// @notice Queue a redeem of `shares` taken from `owner`, credited to `controller`

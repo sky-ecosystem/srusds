@@ -317,9 +317,8 @@ contract LCTSQueues is UUPSUpgradeable {
         // Clear shares
         pos.shares = 0;
 
-        // If last controller cancels, advance generation
+        // If last controller cancels, clear any rounding dust so the next request starts at 1:1
         if (queue.totalShares == 0) {
-            queue.currentGen++;
             queue.totalUnderlying = 0;
         }
 

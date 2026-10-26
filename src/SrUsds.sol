@@ -197,7 +197,7 @@ contract SrUsds is UUPSUpgradeable {
         if (assets > 0) {
             // Mint sUSDS: suck USDS from vat, convert to sUSDS
             uint256 usdsAmt = susds.previewMint(uint256(assets));
-            vat.suck(address(this), address(this), usdsAmt * RAY);
+            vat.suck(vow, address(this), usdsAmt * RAY);
             usdsJoin.exit(address(this), usdsAmt);
             susds.mint(uint256(assets), address(this));
             newTotalAssets = totalAssets_ + uint256(assets);

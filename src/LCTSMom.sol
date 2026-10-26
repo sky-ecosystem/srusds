@@ -21,7 +21,6 @@ interface AuthorityLike {
 }
 
 interface BeamLike {
-    function diss(address) external;
     function file(bytes32, uint256) external;
 }
 
@@ -33,12 +32,7 @@ contract LCTSMom {
     // --- Events ---
     event SetOwner(address indexed owner);
     event SetAuthority(address indexed authority);
-    event DissBeamBud(address indexed beam, address bud);
     event HaltBeam(address indexed beam);
-    event ZeroMaxMint(address indexed beam);
-    event ZeroMaxCut(address indexed beam);
-    event ZeroMaxDepositCapacity(address indexed beam);
-    event ZeroMaxRedeemCapacity(address indexed beam);
 
     // --- Modifiers ---
     modifier onlyOwner() {
@@ -79,33 +73,9 @@ contract LCTSMom {
     }
 
     // --- Emergency Actions ---
-    function dissBeamBud(address beam, address bud) external auth {
-        BeamLike(beam).diss(bud);
-        emit DissBeamBud(beam, bud);
-    }
-
+    /// @notice Halt the beam: no settlement until governance un-halts it. Users can still queue, cancel and claim
     function haltBeam(address beam) external auth {
         BeamLike(beam).file("bad", 1);
         emit HaltBeam(beam);
-    }
-
-    function zeroMaxMint(address beam) external auth {
-        BeamLike(beam).file("maxMint", 0);
-        emit ZeroMaxMint(beam);
-    }
-
-    function zeroMaxCut(address beam) external auth {
-        BeamLike(beam).file("maxCut", 0);
-        emit ZeroMaxCut(beam);
-    }
-
-    function zeroMaxDepositCapacity(address beam) external auth {
-        BeamLike(beam).file("maxDepositCapacity", 0);
-        emit ZeroMaxDepositCapacity(beam);
-    }
-
-    function zeroMaxRedeemCapacity(address beam) external auth {
-        BeamLike(beam).file("maxRedeemCapacity", 0);
-        emit ZeroMaxRedeemCapacity(beam);
     }
 }

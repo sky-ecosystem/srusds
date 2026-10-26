@@ -29,8 +29,6 @@ contract LCTSBeam {
     uint256 public maxCut;             // Max cut value [wad]
     uint256 public maxDepositCapacity; // Max deposit queue capacity [wad]
     uint256 public maxRedeemCapacity;  // Max redeem queue capacity [wad]
-    uint256 public hop;                // Min period between settlements [days]
-    uint256 public rho;                // Day of last settlement [days since epoch]
 
     // --- Immutables ---
     QueuesLike public immutable queues;
@@ -99,8 +97,6 @@ contract LCTSBeam {
             maxDepositCapacity = data;
         } else if (what == "maxRedeemCapacity") {
             maxRedeemCapacity = data;
-        } else if (what == "hop") {
-            hop = data;
         } else revert("LCTSBeam/file-unrecognized-param");
         emit File(what, data);
     }
@@ -114,13 +110,10 @@ contract LCTSBeam {
         uint256 depositCapacity,
         uint256 redeemCapacity
     ) external toll good {
-        uint256 day = block.timestamp / 1 days;
-        require(day >= rho + hop, "LCTSBeam/too-soon");
         require(profit <= 0 || uint256(profit) <= maxMint, "LCTSBeam/maxMint-exceed");
         require(profit >= 0 || uint256(-profit) <= maxCut, "LCTSBeam/maxCut-exceed");
         require(depositCapacity <= maxDepositCapacity, "LCTSBeam/maxDepositCapacity-exceed");
         require(redeemCapacity <= maxRedeemCapacity, "LCTSBeam/maxRedeemCapacity-exceed");
-        rho = day;
 
         queues.settle(profit, depositCapacity, redeemCapacity);
 

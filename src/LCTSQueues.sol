@@ -37,7 +37,7 @@ interface ShareLike is TokenLike {
 }
 
 /// @title LCTSQueues
-/// @notice Asynchronous deposit and redeem requests, settled once per daily window, for a single share token
+/// @notice Asynchronous deposit and redeem requests, settled in a daily window on scheduled days, for a single share token
 /// @dev Loosely follows ERC-7540/ERC-7575: this contract is the vault users request, cancel and claim on, and
 ///      `share` is the separate share token. It holds everything owed to users: pending assets, pending
 ///      (escrowed) shares, and claimable shares/assets not yet claimed. The share token only holds the backing
@@ -72,9 +72,12 @@ contract LCTSQueues is UUPSUpgradeable {
     // --- Storage Variables ---
 
     mapping(address usr => uint256 allowed) public wards;
-    uint256 public lockTimeBgn;      // Time in the day when the settlement window opens  [seconds, e.g. 13 hours == 13:00 UTC]
-    uint256 public lockTimeEnd;      // Time in the day when the settlement window closes [seconds, e.g. 16 hours == 16:00 UTC]
-    uint256 public lastSettleDay;    // Day of the last settlement [days since epoch]
+    // Settlement schedule, packed into one slot as it is read on every request and cancellation
+    uint32  public lockTimeBgn;      // Time in the day when the settlement window opens  [seconds, e.g. 13 hours == 13:00 UTC]
+    uint32  public lockTimeEnd;      // Time in the day when the settlement window closes [seconds, e.g. 16 hours == 16:00 UTC]
+    uint32  public period;           // Days between settlement days [days, e.g. 7 == weekly]
+    uint32  public startDay;         // First settlement day, then every `period` days after it [days since epoch]
+    uint32  public lastSettleDay;    // Day of the last settlement [days since epoch]
 
     Queue public depositQueue;       // Underlying = assets, reward = shares (getter: currentGen, totalShares, totalUnderlying)
     Queue public redeemQueue;        // Underlying = shares, reward = assets (getter: currentGen, totalShares, totalUnderlying)
@@ -156,22 +159,34 @@ contract LCTSQueues is UUPSUpgradeable {
         if (what == "lockTimeBgn") {
             require(data < 1 days, "LCTSQueues/incorrect-time-in-day");
             require(data < lockTimeEnd, "LCTSQueues/not-less-lock-end");
-            lockTimeBgn = data;
+            lockTimeBgn = uint32(data);
         } else if (what == "lockTimeEnd") {
             require(data <= 1 days, "LCTSQueues/incorrect-time-in-day");
             require(data > lockTimeBgn, "LCTSQueues/not-greater-lock-bgn");
-            lockTimeEnd = data;
+            lockTimeEnd = uint32(data);
+        } else if (what == "period") {
+            require(data > 0, "LCTSQueues/zero-period");
+            require(data <= type(uint32).max, "LCTSQueues/period-overflow");
+            period = uint32(data);
+        } else if (what == "startDay") {
+            require(data <= type(uint32).max, "LCTSQueues/startDay-overflow");
+            startDay = uint32(data);
         } else revert("LCTSQueues/file-unrecognized-param");
         emit File(what, data);
     }
 
     // --- Settlement ---
 
-    /// @dev Inside today's settlement window and not yet settled today: requests and cancellations are closed
+    /// @dev On a settlement day, inside its window and not yet settled: requests and cancellations are closed
     ///      and settle() can be called. Settling reopens the queues for the rest of the window
     function _locked() internal view returns (bool) {
+        uint256 day  = block.timestamp / 1 days;
         uint256 time = block.timestamp % 1 days;
-        return time >= lockTimeBgn && time < lockTimeEnd && lastSettleDay < block.timestamp / 1 days;
+        return day >= startDay                      // The schedule has started
+            && (day - startDay) % period == 0       // Today is a settlement day
+            && time >= lockTimeBgn                  // The settlement window has opened
+            && time < lockTimeEnd                   // and has not closed yet
+            && lastSettleDay < day;                 // Today has not been settled yet
     }
 
     /// @dev Convert up to capacity of a queue's underlying into its reward through the share token:
@@ -221,7 +236,7 @@ contract LCTSQueues is UUPSUpgradeable {
     /// @notice Revalue the share by `profit` and convert both queues up to the given capacities, once per window
     function settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external auth {
         require(_locked(), "LCTSQueues/not-locked");
-        lastSettleDay = block.timestamp / 1 days;
+        lastSettleDay = uint32(block.timestamp / 1 days);
 
         // Revalue the outstanding shares before converting at the new price
         share.settle(profit);
@@ -371,7 +386,7 @@ contract LCTSQueues is UUPSUpgradeable {
 
     // --- View Functions ---
 
-    /// @notice Whether requests and cancellations are currently closed: inside today's settlement window and not yet settled today
+    /// @notice Whether requests and cancellations are currently closed: on a settlement day, inside its window and not yet settled
     function locked() external view returns (bool) {
         return _locked();
     }

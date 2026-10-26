@@ -101,11 +101,13 @@ contract LCTSQueues is UUPSUpgradeable {
     event File(bytes32 indexed what, uint256 data);
     event Lock();
     event Plan(int256 profit, uint256 depositCapacity, uint256 redeemCapacity);
-    event Settle(uint256 depositsConverted, uint256 redeemsConverted);
-    event Request(bool indexed isDeposit, address indexed owner, uint256 indexed gen, uint256 amount, uint256 queueShares);
-    event Cancel(bool indexed isDeposit, address indexed owner, uint256 indexed gen, address receiver, uint256 amount);
-    event Claim(bool indexed isDeposit, address indexed owner, uint256 indexed gen, address receiver, uint256 amount);
-    event Convert(bool indexed isDeposit, uint256 indexed gen, uint256 capacity, uint256 converted, uint256 received, bool finalized);
+    event Settle(uint256 depositsConverted, uint256 depositsReceived, uint256 redeemsConverted, uint256 redeemsReceived);
+    event DepositRequest(address indexed owner, uint256 indexed gen, uint256 assets, uint256 queueShares);
+    event RedeemRequest(address indexed owner, uint256 indexed gen, uint256 shares, uint256 queueShares);
+    event CancelDeposit(address indexed owner, uint256 indexed gen, address receiver, uint256 assets);
+    event CancelRedeem(address indexed owner, uint256 indexed gen, address receiver, uint256 shares);
+    event ClaimDeposit(address indexed owner, address receiver, uint256 shares);
+    event ClaimRedeem(address indexed owner, address receiver, uint256 assets);
 
     // --- Modifiers ---
 
@@ -198,9 +200,9 @@ contract LCTSQueues is UUPSUpgradeable {
 
     // --- Settlement ---
 
-    /// @dev Convert up to capacity of a queue's underlying into its reward through the share token
-    function _convert(bool isDeposit, uint256 capacity) internal returns (uint256 converted) {
-        Queue storage queue = isDeposit ? depositQueue : redeemQueue;
+    /// @dev Convert up to capacity of a queue's underlying into its reward through the share token:
+    ///      asset into shares for the deposit queue, shares into asset for the redeem queue
+    function _convert(Queue storage queue, TokenLike underlying, uint256 capacity) internal returns (uint256 converted, uint256 received) {
         uint256 totalUnderlying = queue.totalUnderlying;
         uint256 totalShares = queue.totalShares;
 
@@ -217,16 +219,14 @@ contract LCTSQueues is UUPSUpgradeable {
             }
         }
 
-        // Nothing to convert, or nothing creditable: leave the generation untouched. The third
-        // term is the one that matters -- underlying must never leave the queue uncredited.
-        // totalShares > 0 past the first term, as totalUnderlying > 0 implies a non-empty generation
-        uint256 received = converted == 0 ? 0 : isDeposit ? share.convertToShares(converted) : share.convertToAssets(converted);
-        if (converted == 0 || received == 0 || received * RAY / totalShares == 0) {
-            emit Convert(isDeposit, queue.currentGen, capacity, 0, 0, false);
-            return 0;
-        }
+        if (converted == 0) return (0, 0);
 
-        received = isDeposit
+        // Nothing creditable: leave the generation untouched, as underlying must never leave the
+        // queue uncredited. totalShares > 0 here, as totalUnderlying > 0 implies a non-empty generation
+        received = underlying == asset ? share.convertToShares(converted) : share.convertToAssets(converted);
+        if (received * RAY / totalShares == 0) return (0, 0);
+
+        received = underlying == asset
                    ? share.deposit(converted, address(this))
                    : share.redeem(converted, address(this), address(this));
 
@@ -237,15 +237,11 @@ contract LCTSQueues is UUPSUpgradeable {
         totalUnderlying -= converted;
         queue.totalUnderlying = totalUnderlying;
 
-        bool finalized = totalUnderlying == 0;
-
         // If generation fully drained, finalize and advance
-        if (finalized) {
+        if (totalUnderlying == 0) {
             queue.currentGen++;
             queue.totalShares = 0;
         }
-
-        emit Convert(isDeposit, finalized ? queue.currentGen - 1 : queue.currentGen, capacity, converted, received, finalized);
     }
 
     /// @notice Settle the current cycle
@@ -258,8 +254,8 @@ contract LCTSQueues is UUPSUpgradeable {
         share.settle(profit);
 
         // Convert both queues up to their planned capacity
-        uint256 depositsConverted = _convert(true,  depositCapacity);
-        uint256 redeemsConverted  = _convert(false, redeemCapacity);
+        (uint256 depositsConverted, uint256 depositsReceived) = _convert(depositQueue, asset, depositCapacity);
+        (uint256 redeemsConverted,  uint256 redeemsReceived)  = _convert(redeemQueue, share, redeemCapacity);
 
         // Reset settlement params
         locked          = 0;
@@ -267,7 +263,7 @@ contract LCTSQueues is UUPSUpgradeable {
         depositCapacity = 0;
         redeemCapacity  = 0;
 
-        emit Settle(depositsConverted, redeemsConverted);
+        emit Settle(depositsConverted, depositsReceived, redeemsConverted, redeemsReceived);
     }
 
     // --- Internal Queue Logic ---
@@ -279,45 +275,43 @@ contract LCTSQueues is UUPSUpgradeable {
         pos.rewardDebt = rpt;
     }
 
-    function _request(bool isDeposit, uint256 amount) internal {
+    function _request(Queue storage queue, TokenLike token, uint256 amount) internal returns (uint256 gen, uint256 queueShares) {
         require(amount > 0, "LCTSQueues/zero-amount");
         require(locked == 0, "LCTSQueues/queue-locked");
 
-        Queue storage queue = isDeposit ? depositQueue : redeemQueue;
         Position storage pos = queue.positions[msg.sender];
 
         _checkpoint(queue, pos);
 
-        // Escrow the request: assets for deposits, shares for redeems
-        (isDeposit ? asset : TokenLike(address(share))).transferFrom(msg.sender, address(this), amount);
+        // Escrow the request
+        token.transferFrom(msg.sender, address(this), amount);
 
         // Calculate internal queue shares to mint
-        uint256 queueShares = queue.totalShares == 0
-                              ? amount
-                              : amount * queue.totalShares / queue.totalUnderlying;
+        queueShares = queue.totalShares == 0
+                      ? amount
+                      : amount * queue.totalShares / queue.totalUnderlying;
         require(queueShares > 0, "LCTSQueues/zero-shares");
 
         // Update state
+        gen = queue.currentGen;
         queue.totalUnderlying += amount;
         queue.totalShares += queueShares;
-        if (pos.gen < queue.currentGen) {
+        if (pos.gen < gen) {
             // Start a new position in the current generation; the old one's claimable balance is kept
-            pos.gen = queue.currentGen;
+            pos.gen = gen;
             pos.shares = queueShares;
-            pos.rewardDebt = queue.rewardPerToken[queue.currentGen];
+            pos.rewardDebt = queue.rewardPerToken[gen];
         } else {
             pos.shares += queueShares;
         }
-
-        emit Request(isDeposit, msg.sender, queue.currentGen, amount, queueShares);
     }
 
-    function _cancel(bool isDeposit, address receiver) internal returns (uint256 amount) {
+    function _cancel(Queue storage queue, TokenLike token, address receiver) internal returns (uint256 gen, uint256 amount) {
         require(receiver != address(0), "LCTSQueues/receiver-zero-address");
         require(locked == 0, "LCTSQueues/queue-locked");
-        Queue storage queue = isDeposit ? depositQueue : redeemQueue;
         Position storage pos = queue.positions[msg.sender];
-        require(pos.gen == queue.currentGen, "LCTSQueues/not-current-gen");
+        gen = queue.currentGen;
+        require(pos.gen == gen, "LCTSQueues/not-current-gen");
         require(pos.shares > 0, "LCTSQueues/zero-shares");
 
         // Keep whatever already converted claimable
@@ -339,17 +333,14 @@ contract LCTSQueues is UUPSUpgradeable {
             queue.totalUnderlying = 0;
         }
 
-        // Return the pending amount: assets for deposits, shares for redeems
+        // Return the pending amount
         if (amount > 0) {
-            (isDeposit ? asset : TokenLike(address(share))).transfer(receiver, amount);
+            token.transfer(receiver, amount);
         }
-
-        emit Cancel(isDeposit, msg.sender, pos.gen, receiver, amount);
     }
 
-    function _claim(bool isDeposit, uint256 amount, address receiver) internal returns (uint256 claimed) {
+    function _claim(Queue storage queue, TokenLike token, uint256 amount, address receiver) internal returns (uint256 claimed) {
         require(receiver != address(0), "LCTSQueues/receiver-zero-address");
-        Queue storage queue = isDeposit ? depositQueue : redeemQueue;
         Position storage pos = queue.positions[msg.sender];
 
         _checkpoint(queue, pos);
@@ -358,9 +349,7 @@ contract LCTSQueues is UUPSUpgradeable {
         pos.claimable -= claimed;
 
         if (claimed > 0) {
-            // Deposits are claimed in shares, redeems in assets
-            (isDeposit ? TokenLike(address(share)) : asset).transfer(receiver, claimed);
-            emit Claim(isDeposit, msg.sender, pos.gen, receiver, claimed);
+            token.transfer(receiver, claimed);
         }
     }
 
@@ -368,32 +357,40 @@ contract LCTSQueues is UUPSUpgradeable {
 
     /// @notice Request a deposit of `assets`
     function requestDeposit(uint256 assets) external {
-        _request(true, assets);
+        (uint256 gen, uint256 queueShares) = _request(depositQueue, asset, assets);
+        emit DepositRequest(msg.sender, gen, assets, queueShares);
     }
 
     /// @notice Request a redeem of `shares`
     function requestRedeem(uint256 shares) external {
-        _request(false, shares);
+        (uint256 gen, uint256 queueShares) = _request(redeemQueue, share, shares);
+        emit RedeemRequest(msg.sender, gen, shares, queueShares);
     }
 
     /// @notice Cancel the pending deposit request, returning its pending assets to `receiver` (anything converted stays claimable)
     function cancelDeposit(address receiver) external returns (uint256 assets) {
-        assets = _cancel(true, receiver);
+        uint256 gen;
+        (gen, assets) = _cancel(depositQueue, asset, receiver);
+        emit CancelDeposit(msg.sender, gen, receiver, assets);
     }
 
     /// @notice Cancel the pending redeem request, returning its pending shares to `receiver` (anything converted stays claimable)
     function cancelRedeem(address receiver) external returns (uint256 shares) {
-        shares = _cancel(false, receiver);
+        uint256 gen;
+        (gen, shares) = _cancel(redeemQueue, share, receiver);
+        emit CancelRedeem(msg.sender, gen, receiver, shares);
     }
 
     /// @notice Claim `shares` converted from deposit requests (type(uint256).max claims all)
     function claimDeposit(uint256 shares, address receiver) external returns (uint256 claimed) {
-        claimed = _claim(true, shares, receiver);
+        claimed = _claim(depositQueue, share, shares, receiver);
+        emit ClaimDeposit(msg.sender, receiver, claimed);
     }
 
     /// @notice Claim `assets` converted from redeem requests (type(uint256).max claims all)
     function claimRedeem(uint256 assets, address receiver) external returns (uint256 claimed) {
-        claimed = _claim(false, assets, receiver);
+        claimed = _claim(redeemQueue, asset, assets, receiver);
+        emit ClaimRedeem(msg.sender, receiver, claimed);
     }
 
     // --- View Functions ---

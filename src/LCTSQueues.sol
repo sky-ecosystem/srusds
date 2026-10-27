@@ -47,7 +47,9 @@ interface ShareLike is TokenLike {
 ///      the tokens on cancel or claim. An operator approved through setOperator can act as owner or controller.
 ///
 ///      Both queues implement the generation-based model where all requests in the same generation share
-///      proportionally in the conversion capacity allocated to that generation.
+///      proportionally in the conversion capacity allocated to that generation. A generation ends when it is
+///      drained, or when partial conversions have pushed its shares per unit of underlying to MAX_SHARE_RATIO:
+///      then what is left rolls into a fresh generation at 1:1, and positions follow lazily when next touched.
 contract LCTSQueues is UUPSUpgradeable {
 
     // --- Structs ---
@@ -55,15 +57,16 @@ contract LCTSQueues is UUPSUpgradeable {
     struct Position {
         uint256 gen;        // Generation this position belongs to
         uint256 shares;     // Number of internal queue shares held // TODO: should we rename to units / queueUnits?
-        uint256 rewardDebt; // rewardPerToken snapshot at the last checkpoint [ray]
-        uint256 claimable;  // Converted and not yet claimed, as of the last checkpoint
+        uint256 rewardDebt; // rewardPerToken snapshot at the last migration [ray]
+        uint256 claimable;  // Converted and not yet claimed, as of the last migration
     }
 
     struct Queue {
         uint256 currentGen;
         uint256 totalShares;
         uint256 totalUnderlying;
-        mapping(uint256 gen => uint256) rewardPerToken; // Cumulative reward per internal queue share [ray]
+        mapping(uint256 gen => uint256)  rewardPerToken; // Cumulative reward per internal queue share [ray]
+        mapping(uint256 gen => uint256)  carry;          // Shares of the next generation per share of this one, once rolled over [ray]; 0 if drained
         mapping(address usr => Position) positions;
     }
 
@@ -90,8 +93,8 @@ contract LCTSQueues is UUPSUpgradeable {
     // --- Constants ---
 
     uint256 constant RAY = 10 ** 27;
-    // Largest totalShares:totalUnderlying a generation may carry. Conversion is the only thing
-    // that raises it, so bounding the remainder a conversion may leave bounds the ratio itself.
+    // Largest totalShares:totalUnderlying a generation may carry. Conversion is the only thing that raises
+    // it, so a generation is rolled over as soon as a conversion pushes it to the cap.
     uint256 constant MAX_SHARE_RATIO = 10 ** 9;
 
     // --- Events ---
@@ -196,17 +199,6 @@ contract LCTSQueues is UUPSUpgradeable {
 
         converted = capacity < totalUnderlying ? capacity : totalUnderlying;
 
-        // A conversion removes underlying but keeps all shares, so the shares per unit of underlying go up.
-        // With only a tiny remainder left, the next joiner would get a huge number of shares and every later
-        // reward per share would round down to zero. So either drain the generation completely or leave at
-        // least totalShares / MAX_SHARE_RATIO behind.
-        if (converted < totalUnderlying) {
-            uint256 minRemainder = totalShares / MAX_SHARE_RATIO;
-            if (totalUnderlying - converted < minRemainder) {
-                converted = totalUnderlying > minRemainder ? totalUnderlying - minRemainder : 0;
-            }
-        }
-
         // Nothing to convert (empty queue or no capacity); also avoids dividing by totalShares == 0 below
         if (converted == 0) return (0, 0);
 
@@ -215,17 +207,31 @@ contract LCTSQueues is UUPSUpgradeable {
                    : share.redeem(converted, address(this), address(this));
 
         // Update reward accumulator
-        queue.rewardPerToken[queue.currentGen] += received * RAY / totalShares;
+        uint256 gen = queue.currentGen;
+        queue.rewardPerToken[gen] += received * RAY / totalShares;
 
         // Reduce underlying
         totalUnderlying -= converted;
-        queue.totalUnderlying = totalUnderlying;
 
-        // If generation fully drained, finalize and advance
-        if (totalUnderlying == 0) {
-            queue.currentGen++;
-            queue.totalShares = 0;
+        // A conversion removes underlying but keeps all shares, so the shares per unit of underlying go up and
+        // nothing brings them down again within a generation. Left unchecked, a late joiner would get a huge
+        // number of shares and every later reward per share would round down to zero. So the generation ends
+        // either when it is drained, or when the ratio reaches the cap: then the remainder rolls into a fresh
+        // generation at 1:1, and `carry` lets positions follow when they are next touched.
+        if (totalUnderlying == 0 || totalShares / totalUnderlying >= MAX_SHARE_RATIO) {
+            queue.currentGen = gen + 1;
+            uint256 carry = totalUnderlying * RAY / totalShares; // Next-generation shares per share
+            if (carry == 0) {
+                // Drained, or so little left (ratio beyond RAY) that no position could carry anything:
+                // the dust stays here and carry stays 0
+                queue.totalShares = 0;
+                totalUnderlying = 0;
+            } else {
+                queue.carry[gen] = carry;
+                queue.totalShares = totalUnderlying;
+            }
         }
+        queue.totalUnderlying = totalUnderlying;
     }
 
     /// @notice Revalue the share by `profit` and convert both queues up to the given capacities, once per window
@@ -245,11 +251,39 @@ contract LCTSQueues is UUPSUpgradeable {
 
     // --- Internal Queue Logic ---
 
-    /// @dev Move what has converted since the last checkpoint into the stored claimable balance, without paying it out
-    function _checkpoint(Queue storage queue, Position storage pos) internal {
-        uint256 rpt = queue.rewardPerToken[pos.gen];
-        pos.claimable += pos.shares * (rpt - pos.rewardDebt) / RAY;
-        pos.rewardDebt = rpt;
+    /// @dev A position carried through up to `maxSteps` of the roll-overs since it was last touched: the
+    ///      generation it lands in, its shares there, and everything it can claim up to that point. Each
+    ///      generation it leaves is credited in full, from the last migration or from its start if it was
+    ///      carried in. Nothing is carried past a drained generation. With no step limit this is the position as
+    ///      of now
+    function _accrued(Queue storage queue, Position storage pos, uint256 maxSteps) internal view returns (uint256 gen, uint256 shares, uint256 claimable) {
+        uint256 currentGen = queue.currentGen;
+        gen = pos.gen;
+        shares = pos.shares;
+        // The position's own generation, from its last migration
+        claimable = pos.claimable + shares * (queue.rewardPerToken[gen] - pos.rewardDebt) / RAY;
+        // Then each roll-over since, crediting the generation it lands in from its start
+        while (gen < currentGen && shares > 0 && maxSteps > 0) {
+            shares = shares * queue.carry[gen] / RAY;
+            gen++;
+            maxSteps--;
+            claimable += shares * queue.rewardPerToken[gen] / RAY;
+        }
+    }
+
+    /// @dev Carry a position through up to `maxSteps` roll-overs, banking what has converted on the way into its
+    ///      stored claimable balance without paying it out. Returns whether it is now in the current generation
+    function _migrate(Queue storage queue, Position storage pos, uint256 maxSteps) internal returns (bool upToDate) {
+        (uint256 gen, uint256 shares, uint256 claimable) = _accrued(queue, pos, maxSteps);
+        uint256 currentGen = queue.currentGen;
+        if (shares == 0) gen = currentGen; // Nothing left to carry: skip straight to the end
+        if (pos.gen != gen) {
+            pos.gen = gen;
+            pos.shares = shares;
+        }
+        pos.claimable = claimable;
+        pos.rewardDebt = queue.rewardPerToken[gen];
+        upToDate = gen == currentGen;
     }
 
     /// @dev msg.sender must be `usr` or an operator approved by `usr`
@@ -265,7 +299,7 @@ contract LCTSQueues is UUPSUpgradeable {
 
         Position storage pos = queue.positions[controller];
 
-        _checkpoint(queue, pos);
+        _migrate(queue, pos, type(uint256).max);
 
         // Escrow the queued amount from the owner
         token.transferFrom(owner, address(this), amount);
@@ -276,18 +310,10 @@ contract LCTSQueues is UUPSUpgradeable {
                               : amount * queue.totalShares / queue.totalUnderlying;
         require(queueShares > 0, "LCTSQueues/zero-shares");
 
-        // Update state
-        uint256 gen = queue.currentGen;
+        // Update state (the migration brought the position into the current generation)
         queue.totalUnderlying += amount;
         queue.totalShares += queueShares;
-        if (pos.gen < gen) {
-            // Start a new position in the current generation; the old one's claimable balance is kept
-            pos.gen = gen;
-            pos.shares = queueShares;
-            pos.rewardDebt = queue.rewardPerToken[gen];
-        } else {
-            pos.shares += queueShares;
-        }
+        pos.shares += queueShares;
     }
 
     function _cancel(Queue storage queue, TokenLike token, address receiver, address controller) internal returns (uint256 amount) {
@@ -295,11 +321,10 @@ contract LCTSQueues is UUPSUpgradeable {
         require(receiver != address(0), "LCTSQueues/receiver-zero-address");
         require(!_locked(), "LCTSQueues/queue-locked");
         Position storage pos = queue.positions[controller];
-        require(pos.gen == queue.currentGen, "LCTSQueues/not-current-gen");
-        require(pos.shares > 0, "LCTSQueues/zero-shares");
 
-        // Keep whatever already converted claimable
-        _checkpoint(queue, pos);
+        // Keep whatever already converted claimable, and bring the position into the current generation
+        _migrate(queue, pos, type(uint256).max);
+        require(pos.shares > 0, "LCTSQueues/zero-shares");
 
         // Calculate the still pending amount
         amount = pos.shares * queue.totalUnderlying / queue.totalShares;
@@ -325,7 +350,7 @@ contract LCTSQueues is UUPSUpgradeable {
         require(receiver != address(0), "LCTSQueues/receiver-zero-address");
         Position storage pos = queue.positions[controller];
 
-        _checkpoint(queue, pos);
+        _migrate(queue, pos, type(uint256).max);
         claimed = amount == type(uint256).max ? pos.claimable : amount;
         require(claimed <= pos.claimable, "LCTSQueues/insufficient-claimable");
         pos.claimable -= claimed;
@@ -380,6 +405,21 @@ contract LCTSQueues is UUPSUpgradeable {
         emit ClaimRedeem(controller, receiver, msg.sender, claimed);
     }
 
+    // Migration: positions catch up with the roll-overs since they were last touched on their own, inside any
+    // request, cancellation or claim. These carry a position through at most `maxSteps` of them, for one left
+    // behind so many that catching up in one go would run out of gas. Anyone may call them: migrating only
+    // records what the position is already owed, and moves no tokens
+
+    /// @notice Carry `controller`'s deposit position through up to `maxSteps` roll-overs; true once it is up to date
+    function migrateDeposit(address controller, uint256 maxSteps) external returns (bool upToDate) {
+        upToDate = _migrate(depositQueue, depositQueue.positions[controller], maxSteps);
+    }
+
+    /// @notice Carry `controller`'s redeem position through up to `maxSteps` roll-overs; true once it is up to date
+    function migrateRedeem(address controller, uint256 maxSteps) external returns (bool upToDate) {
+        upToDate = _migrate(redeemQueue, redeemQueue.positions[controller], maxSteps);
+    }
+
     // --- View Functions ---
 
     /// @notice Whether requests and cancellations are currently closed: on a settlement day, inside its window and not yet settled
@@ -387,29 +427,34 @@ contract LCTSQueues is UUPSUpgradeable {
         return _locked();
     }
 
-    // Pending: a position with shares in the current generation is part of totalShares, so it is non-zero there
+    // Pending: shares carried into the current generation are part of totalShares, so it is non-zero when they are
+
+    function _pending(Queue storage queue, address controller) internal view returns (uint256) {
+        (, uint256 shares,) = _accrued(queue, queue.positions[controller], type(uint256).max);
+        return shares == 0 ? 0 : shares * queue.totalUnderlying / queue.totalShares;
+    }
+
+    function _claimable(Queue storage queue, address controller) internal view returns (uint256 claimable) {
+        (,, claimable) = _accrued(queue, queue.positions[controller], type(uint256).max);
+    }
 
     /// @notice Assets still waiting to be converted to shares
     function pendingDeposit(address controller) external view returns (uint256) {
-        Position memory pos = depositQueue.positions[controller];
-        return (pos.shares == 0 || pos.gen < depositQueue.currentGen) ? 0 : pos.shares * depositQueue.totalUnderlying / depositQueue.totalShares;
+        return _pending(depositQueue, controller);
     }
 
     /// @notice Shares still waiting to be converted to assets
     function pendingRedeem(address controller) external view returns (uint256) {
-        Position memory pos = redeemQueue.positions[controller];
-        return (pos.shares == 0 || pos.gen < redeemQueue.currentGen) ? 0 : pos.shares * redeemQueue.totalUnderlying / redeemQueue.totalShares;
+        return _pending(redeemQueue, controller);
     }
 
     /// @notice Shares converted from deposits and ready to claim
     function claimableDeposit(address controller) external view returns (uint256) {
-        Position memory pos = depositQueue.positions[controller];
-        return pos.claimable + pos.shares * (depositQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
+        return _claimable(depositQueue, controller);
     }
 
     /// @notice Assets converted from redeems and ready to claim
     function claimableRedeem(address controller) external view returns (uint256) {
-        Position memory pos = redeemQueue.positions[controller];
-        return pos.claimable + pos.shares * (redeemQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
+        return _claimable(redeemQueue, controller);
     }
 }

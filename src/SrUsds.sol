@@ -171,6 +171,13 @@ contract SrUsds is UUPSUpgradeable {
         z = x < y ? x : y;
     }
 
+    function _divup(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        // Note: _divup(0,0) will return 0 differing from natural solidity division
+        unchecked {
+            z = x != 0 ? ((x - 1) / y) + 1 : 0;
+        }
+    }
+
     // --- Admin external functions ---
 
     function rely(address usr) external auth {
@@ -186,32 +193,35 @@ contract SrUsds is UUPSUpgradeable {
     // --- Savings Rate Settlement external function ---
 
     /// @notice Revalue the outstanding shares by `assets` sUSDS, minted from the Vat for gains and returned to the vow for losses
-    function settle(int256 assets) external auth {
+    function settle(int256 assets) external auth { // TODO - might make more sense to settle USDS amount and not sUSDS - this is something to ask
+        uint256 supply = totalSupply;
         uint256 oldChi = chi;
-        uint256 totalAssets_ = totalSupply * oldChi / RAY;
+        uint256 totalAssets_ = supply * oldChi / RAY;
 
         // Nothing outstanding to revalue: keep chi, as it is a divisor everywhere, and move no assets
         if (totalAssets_ == 0 || assets == 0) return;
 
-        uint256 newTotalAssets;
+        uint256 newChi;
         if (assets > 0) {
             // Mint sUSDS: suck USDS from vat, convert to sUSDS
             uint256 usdsAmt = susds.previewMint(uint256(assets));
             vat.suck(vow, address(this), usdsAmt * RAY);
             usdsJoin.exit(address(this), usdsAmt);
             susds.mint(uint256(assets), address(this));
-            newTotalAssets = totalAssets_ + uint256(assets);
+            // Credit exactly what was added, rounded down, so the shares never claim more than the backing
+            uint256 deltaChi = uint256(assets) * RAY / supply;
+            newChi = oldChi + deltaChi;
         } else {
             // Burn sUSDS: redeem to USDS, join back to vat
             uint256 assets_ = _min(uint256(-assets), totalAssets_);
             uint256 usdsAmt = susds.redeem(assets_, address(this), address(this));
             usdsJoin.join(vow, usdsAmt);
-            newTotalAssets = totalAssets_ - assets_;
+            // Debit at least what was removed, rounded up. A total loss must still leave chi non-zero
+            uint256 deltaChi = _divup(assets_ * RAY, supply);
+            newChi = deltaChi < oldChi ? oldChi - deltaChi : 1;
         }
 
-        uint256 newChi = _toUint192(oldChi * newTotalAssets / totalAssets_);
-        if (newChi == 0) newChi = 1; // A total loss must still leave chi non-zero
-        chi = uint192(newChi);
+        chi = _toUint192(newChi);
 
         emit Settle(assets, oldChi, newChi);
     }

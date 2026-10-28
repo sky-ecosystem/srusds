@@ -64,6 +64,7 @@ contract LCTSQueues is UUPSUpgradeable {
         uint256 totalShares;
         uint256 totalUnderlying;
         mapping(uint256 gen => uint256) rewardPerToken; // Cumulative reward per internal queue share [ray]
+        mapping(uint256 gen => uint256) leftover;       // Underlying left per internal queue share when the generation ended [ray]
         mapping(address usr => Position) positions;
     }
 
@@ -91,8 +92,8 @@ contract LCTSQueues is UUPSUpgradeable {
 
     uint256 constant RAY = 10 ** 27;
     // Largest totalShares:totalUnderlying a generation may carry. Conversion is the only thing
-    // that raises it, so bounding the remainder a conversion may leave bounds the ratio itself.
-    uint256 constant MAX_SHARE_RATIO = 10 ** 9;
+    // that raises it, so a generation ends as soon as a conversion pushes it to this.
+    uint256 constant MAX_SHARE_RATIO = 10 ** 17;
 
     // --- Events ---
 
@@ -195,17 +196,8 @@ contract LCTSQueues is UUPSUpgradeable {
         uint256 totalShares = queue.totalShares;
 
         converted = capacity < totalUnderlying ? capacity : totalUnderlying;
-
-        // A conversion removes underlying but keeps all shares, so the shares per unit of underlying go up.
-        // With only a tiny remainder left, the next joiner would get a huge number of shares and every later
-        // reward per share would round down to zero. So either drain the generation completely or leave at
-        // least totalShares / MAX_SHARE_RATIO behind.
-        if (converted < totalUnderlying) {
-            uint256 minRemainder = totalShares / MAX_SHARE_RATIO;
-            if (totalUnderlying - converted < minRemainder) {
-                converted = totalUnderlying > minRemainder ? totalUnderlying - minRemainder : 0;
-            }
-        }
+        // A partial conversion may take at most 3/4 of the pool, so it multiplies the ratio by at most 4
+        require(converted == totalUnderlying || converted <= totalUnderlying * 3 / 4, "LCTSQueues/partial-too-large");
 
         // Nothing to convert (empty queue or no capacity); also avoids dividing by totalShares == 0 below
         if (converted == 0) return (0, 0);
@@ -219,13 +211,18 @@ contract LCTSQueues is UUPSUpgradeable {
 
         // Reduce underlying
         totalUnderlying -= converted;
-        queue.totalUnderlying = totalUnderlying;
 
-        // If generation fully drained, finalize and advance
-        if (totalUnderlying == 0) {
+        // A conversion removes underlying but keeps all shares, so the shares per unit of underlying go up.
+        // With only a tiny remainder left, the next joiner would get a huge number of shares and every later
+        // reward per share would round down to zero. So the generation ends once drained or once the ratio
+        // reaches MAX_SHARE_RATIO; whatever is left stays with its positions, to be cancelled.
+        if (totalShares / MAX_SHARE_RATIO >= totalUnderlying) {
+            queue.leftover[queue.currentGen] = totalUnderlying * RAY / totalShares;
             queue.currentGen++;
             queue.totalShares = 0;
+            totalUnderlying = 0;
         }
+        queue.totalUnderlying = totalUnderlying;
     }
 
     /// @notice Revalue the share by `profit` and convert both queues up to the given capacities, once per window
@@ -264,6 +261,8 @@ contract LCTSQueues is UUPSUpgradeable {
         require(!_locked(), "LCTSQueues/queue-locked");
 
         Position storage pos = queue.positions[controller];
+        // Whatever was left of the position in an ended generation must be cancelled first
+        require(pos.gen == queue.currentGen || pos.shares * queue.leftover[pos.gen] / RAY == 0, "LCTSQueues/cancel-first");
 
         _checkpoint(queue, pos);
 
@@ -295,11 +294,18 @@ contract LCTSQueues is UUPSUpgradeable {
         require(receiver != address(0), "LCTSQueues/receiver-zero-address");
         require(!_locked(), "LCTSQueues/queue-locked");
         Position storage pos = queue.positions[controller];
-        require(pos.gen == queue.currentGen, "LCTSQueues/not-current-gen");
         require(pos.shares > 0, "LCTSQueues/zero-shares");
 
         // Keep whatever already converted claimable
         _checkpoint(queue, pos);
+
+        // In an ended generation, return whatever was left of the position when it ended
+        if (pos.gen < queue.currentGen) {
+            amount = pos.shares * queue.leftover[pos.gen] / RAY;
+            pos.shares = 0;
+            token.transfer(receiver, amount);
+            return amount;
+        }
 
         // Calculate the still pending amount
         amount = pos.shares * queue.totalUnderlying / queue.totalShares;
@@ -387,18 +393,21 @@ contract LCTSQueues is UUPSUpgradeable {
         return _locked();
     }
 
-    // Pending: a position with shares in the current generation is part of totalShares, so it is non-zero there
+    // Pending: a position with shares in the current generation is part of totalShares, so it is non-zero there;
+    // in an ended generation it is whatever was left when the generation ended, which no longer converts
 
     /// @notice Assets still waiting to be converted to shares
     function pendingDeposit(address controller) external view returns (uint256) {
         Position memory pos = depositQueue.positions[controller];
-        return (pos.shares == 0 || pos.gen < depositQueue.currentGen) ? 0 : pos.shares * depositQueue.totalUnderlying / depositQueue.totalShares;
+        if (pos.gen < depositQueue.currentGen) return pos.shares * depositQueue.leftover[pos.gen] / RAY;
+        return pos.shares == 0 ? 0 : pos.shares * depositQueue.totalUnderlying / depositQueue.totalShares;
     }
 
     /// @notice Shares still waiting to be converted to assets
     function pendingRedeem(address controller) external view returns (uint256) {
         Position memory pos = redeemQueue.positions[controller];
-        return (pos.shares == 0 || pos.gen < redeemQueue.currentGen) ? 0 : pos.shares * redeemQueue.totalUnderlying / redeemQueue.totalShares;
+        if (pos.gen < redeemQueue.currentGen) return pos.shares * redeemQueue.leftover[pos.gen] / RAY;
+        return pos.shares == 0 ? 0 : pos.shares * redeemQueue.totalUnderlying / redeemQueue.totalShares;
     }
 
     /// @notice Shares converted from deposits and ready to claim

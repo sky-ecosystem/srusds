@@ -208,6 +208,7 @@ contract SrUsds is UUPSUpgradeable {
             vat.suck(vow, address(this), usdsAmt * RAY);
             usdsJoin.exit(address(this), usdsAmt);
             susds.mint(uint256(assets), address(this));
+
             // Credit exactly what was added, rounded down, so the shares never claim more than the backing
             uint256 deltaChi = uint256(assets) * RAY / supply;
             newChi = oldChi + deltaChi;
@@ -216,9 +217,11 @@ contract SrUsds is UUPSUpgradeable {
             uint256 assets_ = _min(uint256(-assets), totalAssets_);
             uint256 usdsAmt = susds.redeem(assets_, address(this), address(this));
             usdsJoin.join(vow, usdsAmt);
-            // Debit at least what was removed, rounded up. A total loss must still leave chi non-zero
+
+            // Debit at least what was removed, rounded up (at most oldChi, as assets_ <= totalAssets_).
+            // A total loss leaves chi at 0, after which deposits revert, so settle with depositCapacity 0
             uint256 deltaChi = _divup(assets_ * RAY, supply);
-            newChi = deltaChi < oldChi ? oldChi - deltaChi : 1;
+            newChi = oldChi - deltaChi;
         }
 
         chi = _toUint192(newChi);
@@ -330,7 +333,8 @@ contract SrUsds is UUPSUpgradeable {
     }
 
     function convertToShares(uint256 assets) public view returns (uint256) {
-        return assets * RAY / chi;
+        uint256 chi_ = chi;
+        return chi_ > 0 ? assets * RAY / chi_ : 0;
     }
 
     function convertToAssets(uint256 shares) public view returns (uint256) {

@@ -23,19 +23,22 @@ Roles follow ERC-7540: `owner` provides the tokens of a request, `controller` ow
 
 - Takes `assets` sUSDS from `owner` into the deposit queue, credited to `controller`.
 - `msg.sender` must be `owner` or its operator, and `owner` must have approved `SrUsdsQueues` for sUSDS.
+- If `controller` still has a leftover from an ended generation (see [Generation End](#generation-end)), it must be cancelled first.
 - Emits `QueueDeposit` and `Referral` (with the integrator's `referral` code).
 
 ### `queueRedeem(shares, controller, owner)`
 
 - Takes `shares` srUSDS from `owner` into the redeem queue, credited to `controller`.
 - `msg.sender` must be `owner` or its operator, and `owner` must have approved `SrUsdsQueues` for srUSDS.
+- If `controller` still has a leftover from an ended generation (see [Generation End](#generation-end)), it must be cancelled first.
 - Emits `QueueRedeem`.
 
 ### `cancelDeposit(receiver, controller)` / `cancelRedeem(receiver, controller)`
 
 - Returns the `controller`'s whole **pending** sUSDS (or srUSDS) to `receiver`. Anything already converted stays claimable.
+- Once the request's generation has ended (see [Generation End](#generation-end)), returns whatever was left of it at that point: nothing if it was fully converted, the leftover otherwise.
 - `msg.sender` must be `controller` or its operator.
-- Reverts once the request's generation has been fully converted, since nothing is pending then.
+- Reverts if `controller` has no request, including after a cancel.
 
 ### `claimDeposit(shares, receiver, controller)` / `claimRedeem(assets, receiver, controller)`
 
@@ -61,8 +64,8 @@ Settlements happen on scheduled **settlement days**, every `period` days startin
         queue, cancel, claim      claim only             queue, cancel, claim
 ```
 
-- **Before the window**, users can queue and cancel freely. Planning happens off-chain against the queue sizes at this point.
-- **While locked**, requests and cancellations revert, so the queues can't change under the facilitator's plan.
+- **Before the window**, users can queue and cancel freely.
+- **While locked**, requests and cancellations revert, so the queues can't change under the facilitator's plan. Capacities are planned off-chain against the queue sizes at this point (see the limit on partial conversions below).
 - If nobody settles, the queues reopen at `lockTimeEnd` and that cycle converts nothing.
 
 The backing always sits in `SrUsds` as sUSDS, so capacity is not a liquidity limit: it controls how fast risk capital can enter and leave.
@@ -78,6 +81,8 @@ The facilitator calls `SrUsdsBeam.settle`, which checks its limits and forwards 
    - With no srUSDS outstanding (such as the first settlement after launch), nothing is revalued.
 3. Converts up to `depositCapacity` sUSDS from the deposit queue into srUSDS, at the new price.
 4. Converts up to `redeemCapacity` srUSDS from the redeem queue into sUSDS, at the same price.
+
+A conversion either takes the whole queue or at most 3/4 of it: a capacity between the two makes the settlement revert (see [Generation End](#generation-end)). Since the queues are locked, the facilitator can read their sizes and choose capacities that satisfy this.
 
 Because the price is updated before converting, pending redeems take part in the cycle's gain or loss, while pending deposits enter at the new price. Rounding always favors the backing, so `sUSDS balance ≥ totalSupply * chi / RAY` always holds.
 
@@ -100,16 +105,17 @@ Each queue pools all requests into a **generation** that shares every conversion
 - A request adds the underlying (sUSDS or srUSDS) to the queue and gives the position internal queue shares in proportion to it.
 - Each settlement converts part or all of the queue. Every position in the generation gets the same fraction: its share of what was converted becomes **claimable**, and the rest stays **pending**.
 - Converted amounts are tracked with a per-generation accumulator (`rewardPerToken`) and credited lazily, so a settlement does constant work regardless of how many positions there are.
-- When a conversion takes everything that is queued, the generation ends. New requests start the next one; positions in an ended generation keep their claimable balance.
+- A generation ends when a conversion drains it, or pushes its share ratio to the limit described below. New requests start the next one. Positions in an ended generation keep their claimable balance and whatever was left of their pending amount, which no longer converts and is returned by a cancel.
 - There is no time priority within a generation: a request that joins later shares the next conversions equally with those that were already waiting, and never receives anything converted before it joined.
 
 **Example.** Alice queues 100 sUSDS and Bob 300. A settlement converts 200, half of the queue: Alice can claim 50 srUSDS with 50 still pending, and Bob 150 with 150 pending. Carol then queues 100. The next settlement converts 150 of the 300 pending, again half: Alice gets 25, Bob 75 and Carol 50.
 
-### Share Ratio Limit
+### Generation End
 
-- A partial conversion removes underlying from the queue but keeps all its internal shares, so the shares per unit of underlying grow with each partial conversion within a generation.
-- To keep the accounting precise, a partial conversion must leave at least `totalShares / MAX_SHARE_RATIO` (1e9) of underlying behind. A conversion that would leave less is reduced, possibly to zero.
-- A generation that is never fully converted therefore reaches the limit eventually (for example, after about 30 conversions of half the queue). From then on it can only be converted in full.
+- A partial conversion removes underlying from the queue but keeps all its internal shares, so the shares per unit of underlying (the share ratio) grow with each partial conversion within a generation, and nothing brings them down again.
+- To keep this gradual, a partial conversion may take at most 3/4 of what is queued, so one settlement multiplies the ratio by at most 4. A capacity above 3/4 of the queue that does not cover all of it reverts the settlement; converting everything is always allowed.
+- A generation ends when a conversion drains it, or leaves the ratio at or above `MAX_SHARE_RATIO` (1e17). Reaching the limit takes at least 29 partial conversions in a row (of 3/4 each; 57 of half the queue), and leaves under 1e-17 of the generation's shares in underlying.
+- What is left when a generation ends at the limit is frozen: every position is owed its share of it (`pendingDeposit`/`pendingRedeem` show it, but for rounding dust), it no longer takes part in conversions, a cancel returns it, and a controller must cancel it before queueing again. The next generation starts empty, at a 1:1 ratio.
 
 ### Emergency Halt (`SrUsdsMom`)
 

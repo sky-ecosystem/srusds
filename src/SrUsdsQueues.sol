@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/// LCTSQueues.sol -- LCTS (Liquidity Constrained Token Standard) deposit/redeem queues and settlement cycle
+/// SrUsdsQueues.sol -- LCTS (Liquidity Constrained Token Standard) deposit/redeem queues and settlement cycle
 
 // Copyright (C) 2025 Dai Foundation
 //
@@ -34,7 +34,7 @@ interface ShareLike is TokenLike {
     function settle(int256) external;
 }
 
-/// @title LCTSQueues
+/// @title SrUsdsQueues
 /// @notice Asynchronous deposit and redeem requests, settled in a daily window on scheduled days, for a single share token
 /// @dev Loosely follows ERC-7540/ERC-7575: this contract is the vault users request, cancel and claim on, and
 ///      `share` is the separate share token. It holds everything owed to users: pending assets, pending
@@ -48,7 +48,7 @@ interface ShareLike is TokenLike {
 ///
 ///      Both queues implement the generation-based model where all requests in the same generation share
 ///      proportionally in the conversion capacity allocated to that generation.
-contract LCTSQueues is UUPSUpgradeable {
+contract SrUsdsQueues is UUPSUpgradeable {
 
     // --- Structs ---
 
@@ -70,6 +70,7 @@ contract LCTSQueues is UUPSUpgradeable {
 
     // --- Storage Variables ---
 
+    // Upgradeable: only append new variables at the end, never reorder, remove or retype existing ones (incl. Queue fields)
     mapping(address usr => uint256 allowed) public wards;
     // Settlement schedule, packed into one slot as it is read on every request and cancellation
     uint32  public lockTimeBgn;      // Time in the day when the settlement window opens  [seconds, e.g. 13 hours == 13:00 UTC]
@@ -113,7 +114,7 @@ contract LCTSQueues is UUPSUpgradeable {
     // --- Modifiers ---
 
     modifier auth {
-        require(wards[msg.sender] == 1, "LCTSQueues/not-authorized");
+        require(wards[msg.sender] == 1, "SrUsdsQueues/not-authorized");
         _;
     }
 
@@ -157,21 +158,21 @@ contract LCTSQueues is UUPSUpgradeable {
 
     function file(bytes32 what, uint256 data) external auth {
         if (what == "lockTimeBgn") {
-            require(data < 1 days, "LCTSQueues/incorrect-time-in-day");
-            require(data < lockTimeEnd, "LCTSQueues/not-less-lock-end");
+            require(data < 1 days, "SrUsdsQueues/incorrect-time-in-day");
+            require(data < lockTimeEnd, "SrUsdsQueues/not-less-lock-end");
             lockTimeBgn = uint32(data);
         } else if (what == "lockTimeEnd") {
-            require(data <= 1 days, "LCTSQueues/incorrect-time-in-day");
-            require(data > lockTimeBgn, "LCTSQueues/not-greater-lock-bgn");
+            require(data <= 1 days, "SrUsdsQueues/incorrect-time-in-day");
+            require(data > lockTimeBgn, "SrUsdsQueues/not-greater-lock-bgn");
             lockTimeEnd = uint32(data);
         } else if (what == "period") {
-            require(data > 0, "LCTSQueues/zero-period");
-            require(data <= type(uint32).max, "LCTSQueues/period-overflow");
+            require(data > 0, "SrUsdsQueues/zero-period");
+            require(data <= type(uint32).max, "SrUsdsQueues/period-overflow");
             period = uint32(data);
         } else if (what == "startDay") {
-            require(data <= type(uint32).max, "LCTSQueues/startDay-overflow");
+            require(data <= type(uint32).max, "SrUsdsQueues/startDay-overflow");
             startDay = uint32(data);
-        } else revert("LCTSQueues/file-unrecognized-param");
+        } else revert("SrUsdsQueues/file-unrecognized-param");
         emit File(what, data);
     }
 
@@ -227,7 +228,7 @@ contract LCTSQueues is UUPSUpgradeable {
 
     /// @notice Revalue the share by `profit` and convert both queues up to the given capacities, once per window
     function settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external auth {
-        require(_locked(), "LCTSQueues/not-locked");
+        require(_locked(), "SrUsdsQueues/not-locked");
         lastSettleDay = uint32(block.timestamp / 1 days);
 
         // Revalue the outstanding shares before converting at the new price
@@ -251,14 +252,14 @@ contract LCTSQueues is UUPSUpgradeable {
 
     /// @dev msg.sender must be `usr` or an operator approved by `usr`
     function _checkOperator(address usr) internal view {
-        require(usr == msg.sender || isOperator[usr][msg.sender], "LCTSQueues/not-operator");
+        require(usr == msg.sender || isOperator[usr][msg.sender], "SrUsdsQueues/not-operator");
     }
 
     function _queue(Queue storage queue, TokenLike token, uint256 amount, address controller, address owner) internal {
         _checkOperator(owner);
-        require(controller != address(0), "LCTSQueues/controller-zero-address");
-        require(amount > 0, "LCTSQueues/zero-amount");
-        require(!_locked(), "LCTSQueues/queue-locked");
+        require(controller != address(0), "SrUsdsQueues/controller-zero-address");
+        require(amount > 0, "SrUsdsQueues/zero-amount");
+        require(!_locked(), "SrUsdsQueues/queue-locked");
 
         Position storage pos = queue.positions[controller];
         // Whatever was left of the position in an ended generation must be cancelled first
@@ -266,14 +267,11 @@ contract LCTSQueues is UUPSUpgradeable {
 
         _checkpoint(queue, pos);
 
-        // Escrow the queued amount from the owner
-        token.transferFrom(owner, address(this), amount);
-
         // Calculate internal queue shares to mint
         uint256 queueShares = queue.totalShares == 0
                               ? amount
                               : amount * queue.totalShares / queue.totalUnderlying;
-        require(queueShares > 0, "LCTSQueues/zero-shares");
+        require(queueShares > 0, "SrUsdsQueues/zero-shares");
 
         // Update state
         uint256 gen = queue.currentGen;
@@ -287,14 +285,17 @@ contract LCTSQueues is UUPSUpgradeable {
         } else {
             pos.shares += queueShares;
         }
+
+        // Escrow the queued amount from the owner
+        token.transferFrom(owner, address(this), amount);
     }
 
     function _cancel(Queue storage queue, TokenLike token, address receiver, address controller) internal returns (uint256 amount) {
         _checkOperator(controller);
-        require(receiver != address(0), "LCTSQueues/receiver-zero-address");
-        require(!_locked(), "LCTSQueues/queue-locked");
+        require(receiver != address(0), "SrUsdsQueues/receiver-zero-address");
+        require(!_locked(), "SrUsdsQueues/queue-locked");
         Position storage pos = queue.positions[controller];
-        require(pos.shares > 0, "LCTSQueues/zero-shares");
+        require(pos.shares > 0, "SrUsdsQueues/zero-shares");
 
         // Keep whatever already converted claimable
         _checkpoint(queue, pos);
@@ -319,7 +320,7 @@ contract LCTSQueues is UUPSUpgradeable {
 
         // If last controller cancels, clear any rounding dust so the next request starts at 1:1
         if (queue.totalShares == 0) {
-            queue.totalUnderlying = 0;
+            queue.totalUnderlying = 0; // TODO: I think we can remove this
         }
 
         // Return the pending amount
@@ -328,12 +329,12 @@ contract LCTSQueues is UUPSUpgradeable {
 
     function _claim(Queue storage queue, TokenLike token, uint256 amount, address receiver, address controller) internal returns (uint256 claimed) {
         _checkOperator(controller);
-        require(receiver != address(0), "LCTSQueues/receiver-zero-address");
+        require(receiver != address(0), "SrUsdsQueues/receiver-zero-address");
         Position storage pos = queue.positions[controller];
 
         _checkpoint(queue, pos);
         claimed = amount == type(uint256).max ? pos.claimable : amount;
-        require(claimed <= pos.claimable, "LCTSQueues/insufficient-claimable");
+        require(claimed <= pos.claimable, "SrUsdsQueues/insufficient-claimable");
         pos.claimable -= claimed;
 
         token.transfer(receiver, claimed);
@@ -349,7 +350,6 @@ contract LCTSQueues is UUPSUpgradeable {
     }
 
     /// @notice Queue a deposit of `assets` taken from `owner`, credited to `controller`
-    /// @param referral Referral code for attribution, emitted in a Referral event (0 if none)
     function queueDeposit(uint256 assets, address controller, address owner, uint16 referral) external {
         _queue(depositQueue, asset, assets, controller, owner);
         emit QueueDeposit(controller, owner, msg.sender, assets);
@@ -397,27 +397,27 @@ contract LCTSQueues is UUPSUpgradeable {
     // in an ended generation it is whatever was left when the generation ended, which no longer converts
 
     /// @notice Assets still waiting to be converted to shares
-    function pendingDeposit(address controller) external view returns (uint256) {
+    function pendingDeposit(address controller) external view returns (uint256 assets) {
         Position memory pos = depositQueue.positions[controller];
         if (pos.gen < depositQueue.currentGen) return pos.shares * depositQueue.leftover[pos.gen] / RAY;
         return pos.shares == 0 ? 0 : pos.shares * depositQueue.totalUnderlying / depositQueue.totalShares;
     }
 
     /// @notice Shares still waiting to be converted to assets
-    function pendingRedeem(address controller) external view returns (uint256) {
+    function pendingRedeem(address controller) external view returns (uint256 shares) {
         Position memory pos = redeemQueue.positions[controller];
         if (pos.gen < redeemQueue.currentGen) return pos.shares * redeemQueue.leftover[pos.gen] / RAY;
         return pos.shares == 0 ? 0 : pos.shares * redeemQueue.totalUnderlying / redeemQueue.totalShares;
     }
 
     /// @notice Shares converted from deposits and ready to claim
-    function claimableDeposit(address controller) external view returns (uint256) {
+    function claimableDeposit(address controller) external view returns (uint256 shares) {
         Position memory pos = depositQueue.positions[controller];
         return pos.claimable + pos.shares * (depositQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
     }
 
     /// @notice Assets converted from redeems and ready to claim
-    function claimableRedeem(address controller) external view returns (uint256) {
+    function claimableRedeem(address controller) external view returns (uint256 assets) {
         Position memory pos = redeemQueue.positions[controller];
         return pos.claimable + pos.shares * (redeemQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
     }

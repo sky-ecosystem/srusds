@@ -20,7 +20,7 @@ interface QueuesLike {
     function settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external;
 }
 
-contract LCTSBeam {
+contract SrUsdsBeam {
     // --- Storage Variables ---
     mapping(address => uint256) public wards;
     mapping(address => uint256) public buds;
@@ -43,17 +43,17 @@ contract LCTSBeam {
 
     // --- Modifiers ---
     modifier auth() {
-        require(wards[msg.sender] == 1, "LCTSBeam/not-authorized");
+        require(wards[msg.sender] == 1, "SrUsdsBeam/not-authorized");
         _;
     }
 
     modifier toll() {
-        require(buds[msg.sender] == 1, "LCTSBeam/not-facilitator");
+        require(buds[msg.sender] == 1, "SrUsdsBeam/not-facilitator");
         _;
     }
 
     modifier good() {
-        require(bad == 0, "LCTSBeam/module-halted");
+        require(bad == 0, "SrUsdsBeam/module-halted");
         _;
     }
 
@@ -87,7 +87,7 @@ contract LCTSBeam {
 
     function file(bytes32 what, uint256 data) external auth {
         if (what == "bad") {
-            require(data == 0 || data == 1, "LCTSBeam/invalid-bad-value");
+            require(data == 0 || data == 1, "SrUsdsBeam/invalid-bad-value");
             bad = uint8(data);
         } else if (what == "maxMint") {
             maxMint = data;
@@ -97,7 +97,7 @@ contract LCTSBeam {
             maxDepositCapacity = data;
         } else if (what == "maxRedeemCapacity") {
             maxRedeemCapacity = data;
-        } else revert("LCTSBeam/file-unrecognized-param");
+        } else revert("SrUsdsBeam/file-unrecognized-param");
         emit File(what, data);
     }
 
@@ -110,10 +110,10 @@ contract LCTSBeam {
         uint256 depositCapacity,
         uint256 redeemCapacity
     ) external toll good {
-        require(profit <= 0 || uint256(profit) <= maxMint, "LCTSBeam/maxMint-exceed");
-        require(profit >= 0 || uint256(-profit) <= maxCut, "LCTSBeam/maxCut-exceed");
-        require(depositCapacity <= maxDepositCapacity, "LCTSBeam/maxDepositCapacity-exceed");
-        require(redeemCapacity <= maxRedeemCapacity, "LCTSBeam/maxRedeemCapacity-exceed");
+        require(profit <= 0 || uint256(profit) <= maxMint, "SrUsdsBeam/maxMint-exceed");
+        require(profit >= 0 || uint256(-profit) <= maxCut, "SrUsdsBeam/maxCut-exceed");
+        require(depositCapacity <= maxDepositCapacity, "SrUsdsBeam/maxDepositCapacity-exceed");
+        require(redeemCapacity <= maxRedeemCapacity, "SrUsdsBeam/maxRedeemCapacity-exceed");
 
         queues.settle(profit, depositCapacity, redeemCapacity);
 

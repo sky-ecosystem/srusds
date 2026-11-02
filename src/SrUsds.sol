@@ -341,7 +341,7 @@ contract SrUsds is UUPSUpgradeable {
         return shares * chi / RAY;
     }
 
-    // Deposits and redemptions only happen through the LCTS queues
+    // Deposits and redemptions only happen through SrUsdsQueues
     function maxDeposit(address) external pure returns (uint256) {
         return 0;
     }

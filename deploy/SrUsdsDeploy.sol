@@ -23,9 +23,9 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 import "dss-interfaces/Interfaces.sol";
 
 import { SrUsds } from "src/SrUsds.sol";
-import { LCTSQueues } from "src/LCTSQueues.sol";
-import { LCTSBeam } from "src/LCTSBeam.sol";
-import { LCTSMom } from "src/LCTSMom.sol";
+import { SrUsdsQueues } from "src/SrUsdsQueues.sol";
+import { SrUsdsBeam } from "src/SrUsdsBeam.sol";
+import { SrUsdsMom } from "src/SrUsdsMom.sol";
 import { SrUsdsInstance } from "./SrUsdsInstance.sol";
 
 library SrUsdsDeploy {
@@ -41,15 +41,15 @@ library SrUsdsDeploy {
         ScriptTools.switchOwner(_srUsds, deployer, owner);
 
         // 2. Deploy the queues behind a proxy
-        address _queuesImp = address(new LCTSQueues(_srUsds));
-        address _queues = address(new ERC1967Proxy(_queuesImp, abi.encodeCall(LCTSQueues.initialize, ())));
+        address _queuesImp = address(new SrUsdsQueues(_srUsds));
+        address _queues = address(new ERC1967Proxy(_queuesImp, abi.encodeCall(SrUsdsQueues.initialize, ())));
         ScriptTools.switchOwner(_queues, deployer, owner);
 
         // 3. Deploy the beam and the mom
-        address _beam = address(new LCTSBeam(_queues));
+        address _beam = address(new SrUsdsBeam(_queues));
         ScriptTools.switchOwner(_beam, deployer, owner);
 
-        LCTSMom _mom = new LCTSMom();
+        SrUsdsMom _mom = new SrUsdsMom();
         _mom.setOwner(owner);
 
         instance.srUsds    = _srUsds;

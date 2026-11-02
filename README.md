@@ -7,28 +7,28 @@ The system consists of four contracts:
 | Contract | Role |
 | --- | --- |
 | **`SrUsds`** | The `srUSDS` token. An upgradeable (UUPS) ERC-20 whose price in sUSDS (`chi`) moves with each settlement's gain or loss. Holds the sUSDS backing every srUSDS in existence. |
-| **`LCTSQueues`** | The vault users interact with. An upgradeable (UUPS) contract with a deposit queue (sUSDS → srUSDS) and a redeem queue (srUSDS → sUSDS). Holds everything owed to users: pending requests and converted amounts not yet claimed. |
-| **`LCTSBeam`** | The facilitator's entry point. Lets an approved facilitator settle the queues within configured limits, and can be halted. |
-| **`LCTSMom`** | Emergency module. Can halt the Beam without a governance delay. |
+| **`SrUsdsQueues`** | The vault users interact with. An upgradeable (UUPS) contract with a deposit queue (sUSDS → srUSDS) and a redeem queue (srUSDS → sUSDS). Holds everything owed to users: pending requests and converted amounts not yet claimed. |
+| **`SrUsdsBeam`** | The facilitator's entry point. Lets an approved facilitator settle the queues within configured limits, and can be halted. |
+| **`SrUsdsMom`** | Emergency module. Can halt the Beam without a governance delay. |
 
 `srUSDS` is a standard ERC-20 with 18 decimals and EIP-2612 `permit` (EOA and ERC-1271 signatures). Transfers to the zero address or to the token itself are rejected.
 
 ---
 
-## User Functions (`LCTSQueues`)
+## User Functions (`SrUsdsQueues`)
 
 Roles follow ERC-7540: `owner` provides the tokens of a request, `controller` owns the request, and `receiver` gets the tokens on cancel or claim. Requests and cancellations revert while the queues are locked for settlement; claims work at any time.
 
 ### `queueDeposit(assets, controller, owner, referral)`
 
 - Takes `assets` sUSDS from `owner` into the deposit queue, credited to `controller`.
-- `msg.sender` must be `owner` or its operator, and `owner` must have approved `LCTSQueues` for sUSDS.
+- `msg.sender` must be `owner` or its operator, and `owner` must have approved `SrUsdsQueues` for sUSDS.
 - Emits `QueueDeposit` and `Referral` (with the integrator's `referral` code).
 
 ### `queueRedeem(shares, controller, owner)`
 
 - Takes `shares` srUSDS from `owner` into the redeem queue, credited to `controller`.
-- `msg.sender` must be `owner` or its operator, and `owner` must have approved `LCTSQueues` for srUSDS.
+- `msg.sender` must be `owner` or its operator, and `owner` must have approved `SrUsdsQueues` for srUSDS.
 - Emits `QueueRedeem`.
 
 ### `cancelDeposit(receiver, controller)` / `cancelRedeem(receiver, controller)`
@@ -69,7 +69,7 @@ The backing always sits in `SrUsds` as sUSDS, so capacity is not a liquidity lim
 
 ### `settle(profit, depositCapacity, redeemCapacity)`
 
-The facilitator calls `LCTSBeam.settle`, which checks its limits and forwards to `LCTSQueues.settle`. Callable once per settlement day, only while locked, it:
+The facilitator calls `SrUsdsBeam.settle`, which checks its limits and forwards to `SrUsdsQueues.settle`. Callable once per settlement day, only while locked, it:
 
 1. Records the day as settled, which reopens the queues for the rest of the window.
 2. Revalues srUSDS by `profit` (in sUSDS), by changing `chi` in `SrUsds`:
@@ -111,15 +111,15 @@ Each queue pools all requests into a **generation** that shares every conversion
 - To keep the accounting precise, a partial conversion must leave at least `totalShares / MAX_SHARE_RATIO` (1e9) of underlying behind. A conversion that would leave less is reduced, possibly to zero.
 - A generation that is never fully converted therefore reaches the limit eventually (for example, after about 30 conversions of half the queue). From then on it can only be converted in full.
 
-### Emergency Halt (`LCTSMom`)
+### Emergency Halt (`SrUsdsMom`)
 
-- `haltBeam(beam)` sets the Beam's `bad` flag, after which `LCTSBeam.settle` reverts. Callable by the Mom's `owner` (the `PauseProxy`) or through its `authority` (the Chief), so governance can halt immediately, without waiting for the governance delay.
+- `haltBeam(beam)` sets the Beam's `bad` flag, after which `SrUsdsBeam.settle` reverts. Callable by the Mom's `owner` (the `PauseProxy`) or through its `authority` (the Chief), so governance can halt immediately, without waiting for the governance delay.
 - While halted, nothing is settled or converted. Users can still queue, cancel and claim: the queues lock during each window and reopen at `lockTimeEnd`.
-- Only governance can lift the halt (`file("bad", 0)` on the Beam). Governance can also settle directly on `LCTSQueues`, for example to book a loss.
+- Only governance can lift the halt (`file("bad", 0)` on the Beam). Governance can also settle directly on `SrUsdsQueues`, for example to book a loss.
 
 ### Upgradeability
 
-- `SrUsds` and `LCTSQueues` sit behind ERC-1967 proxies (UUPS). Upgrades are authorized by their `wards`, i.e. governance through the `PauseProxy`.
+- `SrUsds` and `SrUsdsQueues` sit behind ERC-1967 proxies (UUPS). Upgrades are authorized by their `wards`, i.e. governance through the `PauseProxy`.
 
 ---
 
@@ -131,7 +131,7 @@ Each queue pools all requests into a **generation** that shares every conversion
                       │  │ claim:  sUSDS                   │  │ claim:  srUSDS
                       ▼  │                                 ▼  │
  ┌──────────────────────────────────────────────────────────────────────────┐
- │ LCTSQueues                                                               │
+ │ SrUsdsQueues                                                             │
  │                                                                          │
  │  sUSDS balance                         srUSDS balance                    │
  │  ├─ deposit queue: pending             ├─ redeem queue: pending          │
@@ -139,7 +139,7 @@ Each queue pools all requests into a **generation** that shares every conversion
  └──────────────────────────────────────────────────────────────────────────┘
         │ settle → deposit conversion:          │ settle → redeem conversion:
         │ sUSDS in, srUSDS minted               │ srUSDS burned, sUSDS out
-        │ to LCTSQueues                         │ to LCTSQueues
+        │ to SrUsdsQueues                       │ to SrUsdsQueues
         ▼                                       ▼
  ┌──────────────────────────────────────────────────────────────────────────┐
  │ SrUsds                                                                   │
@@ -148,7 +148,7 @@ Each queue pools all requests into a **generation** that shares every conversion
  │                                                                          │
  │  totalSupply covers srUSDS held by:                                      │
  │   • users (claimed, freely transferable)                                 │
- │   • LCTSQueues (redeem pending + deposit claimable)                      │
+ │   • SrUsdsQueues (redeem pending + deposit claimable)                    │
  └──────────────────────────────────────────────────────────────────────────┘
         ▲ gain: vat.suck → USDS → mint sUSDS    │ loss: redeem sUSDS → USDS → join to vow
         │                                       ▼
@@ -163,27 +163,27 @@ Each queue pools all requests into a **generation** that shares every conversion
 
 | Parameter | Contract | Notes |
 | --- | --- | --- |
-| `lockTimeBgn` | `LCTSQueues` | Seconds into the day; `< lockTimeEnd` |
-| `lockTimeEnd` | `LCTSQueues` | Seconds into the day; `> lockTimeBgn`, `≤ 1 days` |
-| `period` | `LCTSQueues` | Days between settlement days; `> 0` |
-| `startDay` | `LCTSQueues` | First settlement day, in days since the epoch |
-| `maxMint` | `LCTSBeam` | Largest gain per settlement [sUSDS] |
-| `maxCut` | `LCTSBeam` | Largest loss per settlement [sUSDS] |
-| `maxDepositCapacity` | `LCTSBeam` | Largest deposit capacity per settlement [sUSDS] |
-| `maxRedeemCapacity` | `LCTSBeam` | Largest redeem capacity per settlement [srUSDS] |
-| `bad` | `LCTSBeam` | `1` halts settlement, `0` resumes it |
+| `lockTimeBgn` | `SrUsdsQueues` | Seconds into the day; `< lockTimeEnd` |
+| `lockTimeEnd` | `SrUsdsQueues` | Seconds into the day; `> lockTimeBgn`, `≤ 1 days` |
+| `period` | `SrUsdsQueues` | Days between settlement days; `> 0` |
+| `startDay` | `SrUsdsQueues` | First settlement day, in days since the epoch |
+| `maxMint` | `SrUsdsBeam` | Largest gain per settlement [sUSDS] |
+| `maxCut` | `SrUsdsBeam` | Largest loss per settlement [sUSDS] |
+| `maxDepositCapacity` | `SrUsdsBeam` | Largest deposit capacity per settlement [sUSDS] |
+| `maxRedeemCapacity` | `SrUsdsBeam` | Largest redeem capacity per settlement [srUSDS] |
+| `bad` | `SrUsdsBeam` | `1` halts settlement, `0` resumes it |
 
 ---
 
 ## Roles & Permissions
 
-- **Governance (`PauseProxy`)** is the ward of `SrUsds`, `LCTSQueues` and `LCTSBeam`, and the owner of `LCTSMom`. Acting through executive spells, after the governance delay, it configures the system (`file`), approves facilitators (`kiss`, `diss`), manages wards (`rely`, `deny`), upgrades `SrUsds` and `LCTSQueues`, and lifts a halt.
-- **The facilitator** is a bud of `LCTSBeam`. It calls `LCTSBeam.settle` to report each cycle's profit and choose the capacities, within the Beam's limits and only while it is not halted.
+- **Governance (`PauseProxy`)** is the ward of `SrUsds`, `SrUsdsQueues` and `SrUsdsBeam`, and the owner of `SrUsdsMom`. Acting through executive spells, after the governance delay, it configures the system (`file`), approves facilitators (`kiss`, `diss`), manages wards (`rely`, `deny`), upgrades `SrUsds` and `SrUsdsQueues`, and lifts a halt.
+- **The facilitator** is a bud of `SrUsdsBeam`. It calls `SrUsdsBeam.settle` to report each cycle's profit and choose the capacities, within the Beam's limits and only while it is not halted.
 - **Users:**
   - Only the owner of the tokens, or its operator, can queue them (`queueDeposit`, `queueRedeem`).
   - Only the controller of a request, or its operator, can cancel or claim it (`cancelDeposit`, `cancelRedeem`, `claimDeposit`, `claimRedeem`).
   - Anyone can approve operators (`setOperator`) and use the srUSDS ERC-20 functions and `permit`.
-- **The Chief** is the authority of `LCTSMom`, so governance can call `haltBeam` immediately, without waiting for the governance delay.
+- **The Chief** is the authority of `SrUsdsMom`, so governance can call `haltBeam` immediately, without waiting for the governance delay.
 
 ---
 
@@ -195,4 +195,4 @@ Each queue pools all requests into a **generation** that shares every conversion
 - **Severe losses.** At a `chi` of 0, or an extremely small one after a near-total loss, converting deposits reverts, so the settlement has to be made with `depositCapacity = 0`. Redemptions keep working, and queued depositors can cancel.
 - **Halts stop all conversions.** While the Beam is halted, no deposit or redemption is converted.
 - **Not a full ERC-4626 vault.** `SrUsds` exposes ERC-4626 pricing views and the `deposit`/`redeem` used by the queues, but `maxDeposit` and `maxRedeem` are 0 and there is no `mint`, `withdraw` or `preview*`.
-- **Upgradeability.** Governance can upgrade `SrUsds` and `LCTSQueues`, and so has full control over the funds they hold.
+- **Upgradeability.** Governance can upgrade `SrUsds` and `SrUsdsQueues`, and so has full control over the funds they hold.

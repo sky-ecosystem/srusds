@@ -69,6 +69,7 @@ contract LCTSQueues is UUPSUpgradeable {
 
     // --- Storage Variables ---
 
+    // Upgradeable: only append new variables at the end, never reorder, remove or retype existing ones (incl. Queue fields)
     mapping(address usr => uint256 allowed) public wards;
     // Settlement schedule, packed into one slot as it is read on every request and cancellation
     uint32  public lockTimeBgn;      // Time in the day when the settlement window opens  [seconds, e.g. 13 hours == 13:00 UTC]
@@ -267,9 +268,6 @@ contract LCTSQueues is UUPSUpgradeable {
 
         _checkpoint(queue, pos);
 
-        // Escrow the queued amount from the owner
-        token.transferFrom(owner, address(this), amount);
-
         // Calculate internal queue shares to mint
         uint256 queueShares = queue.totalShares == 0
                               ? amount
@@ -288,6 +286,9 @@ contract LCTSQueues is UUPSUpgradeable {
         } else {
             pos.shares += queueShares;
         }
+
+        // Escrow the queued amount from the owner
+        token.transferFrom(owner, address(this), amount);
     }
 
     function _cancel(Queue storage queue, TokenLike token, address receiver, address controller) internal returns (uint256 amount) {
@@ -313,7 +314,7 @@ contract LCTSQueues is UUPSUpgradeable {
 
         // If last controller cancels, clear any rounding dust so the next request starts at 1:1
         if (queue.totalShares == 0) {
-            queue.totalUnderlying = 0;
+            queue.totalUnderlying = 0; // TODO: I think we can remove this
         }
 
         // Return the pending amount
@@ -343,7 +344,6 @@ contract LCTSQueues is UUPSUpgradeable {
     }
 
     /// @notice Queue a deposit of `assets` taken from `owner`, credited to `controller`
-    /// @param referral Referral code for attribution, emitted in a Referral event (0 if none)
     function queueDeposit(uint256 assets, address controller, address owner, uint16 referral) external {
         _queue(depositQueue, asset, assets, controller, owner);
         emit QueueDeposit(controller, owner, msg.sender, assets);
@@ -387,28 +387,26 @@ contract LCTSQueues is UUPSUpgradeable {
         return _locked();
     }
 
-    // Pending: a position with shares in the current generation is part of totalShares, so it is non-zero there
-
     /// @notice Assets still waiting to be converted to shares
-    function pendingDeposit(address controller) external view returns (uint256) {
-        Position memory pos = depositQueue.positions[controller];
+    function pendingDeposit(address controller) external view returns (uint256 assets) {
+        Position storage pos = depositQueue.positions[controller];
         return (pos.shares == 0 || pos.gen < depositQueue.currentGen) ? 0 : pos.shares * depositQueue.totalUnderlying / depositQueue.totalShares;
     }
 
     /// @notice Shares still waiting to be converted to assets
-    function pendingRedeem(address controller) external view returns (uint256) {
-        Position memory pos = redeemQueue.positions[controller];
+    function pendingRedeem(address controller) external view returns (uint256 shares) {
+        Position storage pos = redeemQueue.positions[controller];
         return (pos.shares == 0 || pos.gen < redeemQueue.currentGen) ? 0 : pos.shares * redeemQueue.totalUnderlying / redeemQueue.totalShares;
     }
 
     /// @notice Shares converted from deposits and ready to claim
-    function claimableDeposit(address controller) external view returns (uint256) {
+    function claimableDeposit(address controller) external view returns (uint256 shares) {
         Position memory pos = depositQueue.positions[controller];
         return pos.claimable + pos.shares * (depositQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
     }
 
     /// @notice Assets converted from redeems and ready to claim
-    function claimableRedeem(address controller) external view returns (uint256) {
+    function claimableRedeem(address controller) external view returns (uint256 assets) {
         Position memory pos = redeemQueue.positions[controller];
         return pos.claimable + pos.shares * (redeemQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
     }

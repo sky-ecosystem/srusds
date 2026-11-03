@@ -35,7 +35,7 @@ Roles follow ERC-7540: `owner` provides the tokens of a request, `controller` ow
 
 - Returns the `controller`'s whole **pending** sUSDS (or srUSDS) to `receiver`. Anything already converted stays claimable.
 - `msg.sender` must be `controller` or its operator.
-- Reverts once the request's generation has been fully converted, since nothing is pending then.
+- Reverts once the request's generation has been fully converted or closed, since nothing is pending then.
 
 ### `claimDeposit(shares, receiver, controller)` / `claimRedeem(assets, receiver, controller)`
 
@@ -100,16 +100,17 @@ Each queue pools all requests into a **generation** that shares every conversion
 - A request adds the underlying (sUSDS or srUSDS) to the queue and gives the position internal queue shares in proportion to it.
 - Each settlement converts part or all of the queue. Every position in the generation gets the same fraction: its share of what was converted becomes **claimable**, and the rest stays **pending**.
 - Converted amounts are tracked with a per-generation accumulator (`rewardPerToken`) and credited lazily, so a settlement does constant work regardless of how many positions there are.
-- When a conversion takes everything that is queued, the generation ends. New requests start the next one; positions in an ended generation keep their claimable balance.
+- When a conversion takes everything that is queued, the generation is drained and ends. New requests start the next one; positions in an ended generation keep their claimable balance.
 - There is no time priority within a generation: a request that joins later shares the next conversions equally with those that were already waiting, and never receives anything converted before it joined.
 
 **Example.** Alice queues 100 sUSDS and Bob 300. A settlement converts 200, half of the queue: Alice can claim 50 srUSDS with 50 still pending, and Bob 150 with 150 pending. Carol then queues 100. The next settlement converts 150 of the 300 pending, again half: Alice gets 25, Bob 75 and Carol 50.
 
-### Share Ratio Limit
+### Share Ratio Limit and Roll-over
 
 - A partial conversion removes underlying from the queue but keeps all its internal shares, so the shares per unit of underlying grow with each partial conversion within a generation.
-- To keep the accounting precise, a partial conversion must leave at least `totalShares / MAX_SHARE_RATIO` (1e9) of underlying behind. A conversion that would leave less is reduced, possibly to zero.
-- A generation that is never fully converted therefore reaches the limit eventually (for example, after about 30 conversions of half the queue). From then on it can only be converted in full.
+- To keep the accounting precise, once a conversion pushes that ratio to `MAX_SHARE_RATIO` (1e9) the generation **rolls over**: what is left becomes a fresh generation at 1:1, so partial conversions keep making progress indefinitely (for example, every 30 conversions of half the queue).
+- A rolled-over generation stays **open**: each settlement credits it as well, in its own shares, through a per-generation `carry` factor (its shares expressed in the current generation's). So a position left behind by roll-overs claims by reading its own generation's accumulator, and a new request or a cancellation carries it into the current generation in one step. Users need no migration call and never loop.
+- Each roll-over divides every open generation's `carry` by at least 1e9, from 1e27, so a generation is **closed** after at most four roll-overs, or at once when its queue is drained. The settlement loop over open generations is therefore bounded to a handful of iterations. Positions in a closed generation have nothing pending; what they had left is under `shares / 1e27` per roll-over and stays in the contract as dust, the same bound as the rounding of a single conversion.
 
 ### Emergency Halt (`SrUsdsMom`)
 

@@ -103,30 +103,30 @@ contract SrUsdsQueuesTest is DssTest {
 
     /// @dev Settle the deposit queue with no profit, returning what converted
     function _settleDeposit(uint256 capacity) internal returns (uint256 converted) {
-        (,, uint256 before) = queues.depositQueue();
+        (,,, uint256 before) = queues.depositQueue();
         _settle(0, capacity, 0);
-        (,, uint256 after_) = queues.depositQueue();
+        (,,, uint256 after_) = queues.depositQueue();
         converted = before - after_;
     }
 
     /// @dev Settle converting `bps` of the deposit queue
     function _settleFraction(uint256 bps) internal returns (uint256 converted) {
-        (,, uint256 before) = queues.depositQueue();
+        (,,, uint256 before) = queues.depositQueue();
         converted = _settleDeposit(before * bps / 10_000);
     }
 
     function _depositGen() internal view returns (uint256 gen) {
-        (gen,,) = queues.depositQueue();
+        (gen,,,) = queues.depositQueue();
     }
 
     function _depositRatio() internal view returns (uint256) {
-        (, uint256 shares, uint256 underlying) = queues.depositQueue();
+        (,, uint256 shares, uint256 underlying) = queues.depositQueue();
         return underlying == 0 ? 0 : shares / underlying; // Drained: nothing to measure
     }
 
-    /// @dev A stored position, read straight from storage. depositQueue is at slot 2 and redeemQueue at slot 7;
-    ///      positions is the Queue struct's 5th member (after currentGen, totalShares, totalUnderlying and
-    ///      rewardPerToken), so the mappings live at slots 6 and 11
+    /// @dev A stored position, read straight from storage. depositQueue is at slot 2 and redeemQueue at slot 9;
+    ///      positions is the Queue struct's 7th member (after currentGen, oldestGen, totalShares, totalUnderlying,
+    ///      rewardPerToken and carry), so the mappings live at slots 8 and 15
     function _position(uint256 slot, address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
         bytes32 base = keccak256(abi.encode(usr, slot));
         gen        = uint256(vm.load(address(queues), base));
@@ -136,11 +136,11 @@ contract SrUsdsQueuesTest is DssTest {
     }
 
     function _depositPosition(address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
-        return _position(6, usr);
+        return _position(8, usr);
     }
 
     function _redeemPosition(address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
-        return _position(11, usr);
+        return _position(15, usr);
     }
 
     // --- Administration ---
@@ -296,7 +296,7 @@ contract SrUsdsQueuesTest is DssTest {
         queues.queueDeposit(100e18, alice, alice, 7);
         vm.stopPrank();
 
-        (uint256 gen, uint256 shares, uint256 underlying) = queues.depositQueue();
+        (uint256 gen,, uint256 shares, uint256 underlying) = queues.depositQueue();
         assertEq(gen, 0);
         assertEq(shares, 100e18);
         assertEq(underlying, 100e18);
@@ -320,7 +320,7 @@ contract SrUsdsQueuesTest is DssTest {
         queues.queueRedeem(shares, alice, alice);
         vm.stopPrank();
 
-        (uint256 gen, uint256 queueShares, uint256 underlying) = queues.redeemQueue();
+        (uint256 gen,, uint256 queueShares, uint256 underlying) = queues.redeemQueue();
         assertEq(gen, 0);
         assertEq(queueShares, shares);
         assertEq(underlying, shares);
@@ -427,8 +427,8 @@ contract SrUsdsQueuesTest is DssTest {
         emit Settle(0, 60e18, 30e18, 60e18, 60e18, 30e18, 30e18);
         queues.settle(0, 60e18, 30e18);
 
-        (,, uint256 depositUnderlying) = queues.depositQueue();
-        (,, uint256 redeemUnderlying) = queues.redeemQueue();
+        (,,, uint256 depositUnderlying) = queues.depositQueue();
+        (,,, uint256 redeemUnderlying) = queues.redeemQueue();
         assertEq(depositUnderlying, 40e18);
         assertEq(redeemUnderlying, 70e18);
         assertEq(queues.claimableDeposit(alice), 60e18);
@@ -441,7 +441,7 @@ contract SrUsdsQueuesTest is DssTest {
         _queueDeposit(alice, 100e18);
         assertEq(_settleDeposit(type(uint256).max), 100e18);
 
-        (uint256 gen, uint256 shares, uint256 underlying) = queues.depositQueue();
+        (uint256 gen,, uint256 shares, uint256 underlying) = queues.depositQueue();
         assertEq(gen, 1);
         assertEq(shares, 0);
         assertEq(underlying, 0);
@@ -504,7 +504,7 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(susds.balanceOf(bob), 60e18);
         assertEq(queues.pendingDeposit(alice), 0);
         assertEq(queues.claimableDeposit(alice), 40e18);
-        (uint256 gen, uint256 shares, uint256 underlying) = queues.depositQueue();
+        (uint256 gen,, uint256 shares, uint256 underlying) = queues.depositQueue();
         assertEq(gen, 0);     // Cancelling does not end the generation
         assertEq(shares, 0);
         assertEq(underlying, 0);
@@ -600,114 +600,364 @@ contract SrUsdsQueuesTest is DssTest {
         vm.prank(alice); assertEq(queues.claimDeposit(type(uint256).max, alice, alice), 80e18);
     }
 
-    // --- Share ratio limit ---
+    // --- Generation roll-over ---
     // Within a generation the shares:underlying ratio only grows: a conversion removes underlying but keeps
-    // every share, and joins keep the ratio as it is. To keep the accounting precise, a partial conversion must
-    // leave at least totalShares / MAX_SHARE_RATIO of underlying behind, so a generation ends only when drained.
+    // every share, and joins keep the ratio as it is. Once a conversion pushes the ratio to MAX_SHARE_RATIO
+    // the remainder rolls into a fresh generation at 1:1, so partial fills keep converting indefinitely. A
+    // rolled-over generation stays open: every later settlement credits it too, in its own shares, through
+    // its carry factor, so a position left behind claims in one step without walking the roll-overs.
+    // The carry is a per-share factor in ray, so each roll-over rounds a position's carried remainder down by
+    // under shares / RAY wei (the same bound as the reward rounding of a single fill), and a generation closes
+    // once its carry rounds to zero, after at most four roll-overs.
 
-    /// A conversion that would leave less than the minimum remainder is reduced to leave exactly that, or to
-    /// nothing once the queue is at the limit; a drain is always allowed and ends the generation
-    function testPartialConversionLeavesMinRemainder() public {
-        _queueDeposit(alice, 1_000_000e18);
-        uint256 minRemainder = 1_000_000e18 / MAX_SHARE_RATIO; // 1e15
-
-        assertEq(_settleDeposit(1_000_000e18 - 1), 1_000_000e18 - minRemainder);
-        (uint256 gen,, uint256 underlying) = queues.depositQueue();
-        assertEq(gen, 0);
-        assertEq(underlying, minRemainder);
-        assertEq(_depositRatio(), MAX_SHARE_RATIO);
-        assertEq(queues.pendingDeposit(alice), minRemainder);
-        assertEq(queues.claimableDeposit(alice), 1_000_000e18 - minRemainder);
-
-        assertEq(_settleDeposit(minRemainder - 1), 0);                // At the limit a partial conversion converts nothing
-        assertEq(_settleDeposit(type(uint256).max), minRemainder);   // Only a drain makes progress
-        assertEq(_depositGen(), 1);
-        assertEq(queues.pendingDeposit(alice), 0);
-        assertEq(queues.claimableDeposit(alice), 1_000_000e18);
+    function _depositOldestGen() internal view returns (uint256 oldest) {
+        (, oldest,,) = queues.depositQueue();
     }
 
-    /// Each 50% fill doubles the ratio, so the 30th reaches the limit; from then on half fills convert nothing
-    /// and the generation can only be converted in full
-    function testHalfFillsFreezeAfterThirty() public {
+    /// @dev Fill `bps` of the queue until the generation rolls over, returning the number of fills it took
+    function _fillUntilRollover(uint256 bps) internal returns (uint256 fills) {
+        uint256 gen = _depositGen();
+        while (_depositGen() == gen) {
+            _settleFraction(bps);
+            fills++;
+            require(fills <= 40, "no rollover: queue exhausted?");
+        }
+    }
+
+    function _halfFillUntilRollover() internal returns (uint256 fills) {
+        fills = _fillUntilRollover(50_00);
+    }
+
+    /// Each 50% fill doubles the ratio, so the 30th fill reaches the cap and rolls the generation over
+    function testHalfFillsRollOverAfterThirty() public {
         _queueDeposit(alice, 1_000_000e18);
 
-        for (uint256 i; i < 30; i++) {
+        assertEq(_halfFillUntilRollover(), 30);
+
+        (uint256 gen, uint256 oldest, uint256 shares, uint256 underlying) = queues.depositQueue();
+        assertEq(gen, 1);
+        assertEq(oldest, 0, "the rolled-over generation stays open");
+        assertEq(shares, underlying, "fresh generation starts at 1:1");
+        assertApproxEqAbs(underlying, 1_000_000e18 >> 30, 1); // Each converted half rounds down, so the remainder rounds up
+    }
+
+    /// Each 90% fill multiplies the ratio by 10, so the 9th fill rolls the generation over
+    function testNinetyPercentFillsRollOverAfterNine() public {
+        _queueDeposit(alice, 1_000_000e18);
+        assertEq(_fillUntilRollover(90_00), 9);
+    }
+
+    /// Partial fills never stop converting: ninety half-fills span three generations and always make progress.
+    /// A large stake, so that 2^90 halvings leave a remainder rather than exhausting the queue
+    function testPartialFillsKeepProgressing() public {
+        _queueDeposit(alice, 1e32);
+
+        for (uint256 i; i < 90; i++) {
             assertGt(_settleFraction(50_00), 0);
             assertLe(_depositRatio(), MAX_SHARE_RATIO);
         }
-        assertEq(_depositRatio(), MAX_SHARE_RATIO);
-        assertEq(_depositGen(), 0);
 
-        assertEq(_settleFraction(50_00), 0);
-        assertEq(_settleFraction(99_99), 0);
-        assertEq(_settleDeposit(type(uint256).max), 1_000_000e18 / MAX_SHARE_RATIO);
-        assertEq(_depositGen(), 1);
-        assertEq(queues.claimableDeposit(alice), 1_000_000e18);
+        assertEq(_depositGen(), 3);
+        // Everything converted so far is claimable; the rest is still pending, both exact to rounding dust.
+        // Each fill and each roll-over rounds down by up to shares / RAY: 1e5 wei here, as the stake is 1e32
+        // (0.001 wei for a 1M-token stake)
+        (,,, uint256 underlying) = queues.depositQueue();
+        assertApproxEqAbs(queues.pendingDeposit(alice), underlying, 3 * 1e5);
+        assertApproxEqAbs(queues.claimableDeposit(alice) + underlying, 1e32, 93 * 1e5);
     }
 
-    /// A wei queued next to a large request cannot poison the generation: the fill that would leave only that
-    /// wei is reduced to leave the minimum remainder, so a later joiner gets a sane number of shares and every
-    /// later conversion is still credited to the wei
-    function testSliverCannotPoisonGeneration() public {
+    /// Three half-fill roll-overs multiply the carry by about 2^-90, under a ray: the generation closes, and
+    /// what its positions had left (under 3 * shares / RAY) is stranded as orphan shares of the current one
+    function testGenerationClosesWhenCarryRoundsToZero() public {
+        _queueDeposit(alice, 1e32);
+        _halfFillUntilRollover();
+        _halfFillUntilRollover();
+        assertEq(_depositOldestGen(), 0);
+        assertGt(queues.pendingDeposit(alice), 0);
+
+        _halfFillUntilRollover();
+        (uint256 gen, uint256 oldest,, uint256 underlying) = queues.depositQueue();
+        assertEq(gen, 3);
+        assertEq(oldest, 1);
+        assertEq(queues.pendingDeposit(alice), 0);
+        assertLe(underlying, 3 * 1e32 / RAY);
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1e32, 93 * 1e5);
+
+        _settleFraction(50_00); // Nothing more is credited to a closed generation
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1e32, 93 * 1e5);
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-shares");
+        queues.cancelDeposit(alice, alice);
+    }
+
+    /// A position left behind by a roll-over keeps being credited in its own generation: it claims without
+    /// moving, its pending is carried at 1:1, and a claim then a cancel pay out everything
+    function testPositionFollowsRollover() public {
+        _queueDeposit(alice, 1_000_000e18);
+        _halfFillUntilRollover();
+        (,,, uint256 remaining) = queues.depositQueue();
+
+        assertEq(queues.pendingDeposit(alice), remaining);
+        assertEq(queues.claimableDeposit(alice), 1_000_000e18 - remaining);
+
+        vm.prank(alice); uint256 claimed = queues.claimDeposit(type(uint256).max, alice, alice);
+        assertEq(claimed, 1_000_000e18 - remaining);
+        assertEq(srusds.balanceOf(alice), claimed);
+        (uint256 gen, uint256 shares,,) = _depositPosition(alice);
+        assertEq(gen, 0, "claiming does not migrate");
+        assertEq(shares, 1_000_000e18);
+
+        vm.prank(alice); uint256 cancelled = queues.cancelDeposit(alice, alice);
+        assertEq(cancelled, remaining);
+        assertEq(susds.balanceOf(alice), remaining);
+        (gen, shares,,) = _depositPosition(alice);
+        assertEq(gen, 1, "cancelling migrates");
+        assertEq(shares, 0);
+        assertEq(queues.pendingDeposit(alice), 0);
+        assertEq(queues.claimableDeposit(alice), 0);
+    }
+
+    /// Settlements after a roll-over credit the rolled-over generation too, in its own shares: alice, left in
+    /// generation 0, is credited exactly as bob who joined generation 1 with the same stake
+    function testSettleCreditsOpenGenerations() public {
+        _queueDeposit(alice, 1_000_000e18);
+        _halfFillUntilRollover();
+        (,,, uint256 remaining) = queues.depositQueue();
+        uint256 aliceBefore = queues.claimableDeposit(alice);
+        _queueDeposit(bob, remaining);
+
+        _settleFraction(50_00);
+
+        assertApproxEqAbs(queues.claimableDeposit(alice) - aliceBefore, remaining / 2, 1);
+        assertApproxEqAbs(queues.claimableDeposit(bob), remaining / 2, 1);
+        assertApproxEqAbs(queues.pendingDeposit(alice), queues.pendingDeposit(bob), 1);
+        (uint256 gen,,,) = _depositPosition(alice);
+        assertEq(gen, 0);
+    }
+
+    /// A position left behind for several roll-overs is credited through each of them and carried in one step
+    function testPositionFollowsSeveralRollovers() public {
+        _queueDeposit(alice, 1e32);
+        _halfFillUntilRollover();
+        _halfFillUntilRollover();
+        assertEq(_depositGen(), 2);
+        assertEq(_depositOldestGen(), 0);
+
+        (,, uint256 shares, uint256 remaining) = queues.depositQueue();
+        assertApproxEqAbs(queues.pendingDeposit(alice), remaining, 2 * 1e5);        // Carry rounding, see testCarryRoundsDownByUnderAWeiPerToken
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1e32 - remaining, 62 * 1e5); // Reward rounding, see testPartialFillsKeepProgressing
+
+        // A new request carries the position over: alice holds every share of generation 2
+        _queueDeposit(alice, 1);
+        (uint256 gen, uint256 posShares,,) = _depositPosition(alice);
+        assertEq(gen, 2);
+        assertApproxEqAbs(posShares, shares + 1, 2 * 1e5); // The difference is orphaned by the rounding of the carries
+    }
+
+    /// Past a drained generation nothing is carried: the position's pending is 0 and all of it is claimable
+    function testRolloverThenDrain() public {
+        _queueDeposit(alice, 1_000_000e18);
+        _halfFillUntilRollover();
+        _settleFraction(10_000);
+        (uint256 gen, uint256 oldest,,) = queues.depositQueue();
+        assertEq(gen, 2);
+        assertEq(oldest, 2, "a drain closes every generation");
+
+        assertEq(queues.pendingDeposit(alice), 0);
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 100);
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-shares");
+        queues.cancelDeposit(alice, alice);
+
+        vm.prank(alice); queues.claimDeposit(type(uint256).max, alice, alice);
+        _queueDeposit(alice, 10e18);
+        (uint256 posGen, uint256 posShares,,) = _depositPosition(alice);
+        assertEq(posGen, 2);
+        assertEq(posShares, 10e18);
+    }
+
+    /// A join after a roll-over gets shares at 1:1 and shares later fills pro-rata with the carried position
+    function testJoinAfterRolloverIsProRata() public {
+        _queueDeposit(alice, 1_000_000e18);
+        _halfFillUntilRollover();
+        (,,, uint256 remaining) = queues.depositQueue();
+
+        _queueDeposit(bob, remaining); // Same stake as alice's remainder
+        (, uint256 bobShares,,) = _depositPosition(bob);
+        assertEq(bobShares, remaining);
+
+        _settleFraction(50_00);
+
+        assertApproxEqAbs(queues.pendingDeposit(alice), queues.pendingDeposit(bob), 1);
+        assertApproxEqAbs(queues.claimableDeposit(bob), remaining / 2, 1);
+    }
+
+    /// Joining again after a roll-over adds to the carried position in the new generation
+    function testRejoinAfterRolloverAddsToCarriedPosition() public {
+        _queueDeposit(alice, 1_000_000e18);
+        _halfFillUntilRollover();
+        (,,, uint256 remaining) = queues.depositQueue();
+
+        _queueDeposit(alice, 10e18);
+
+        (uint256 gen, uint256 posShares,,) = _depositPosition(alice);
+        assertEq(gen, 1);
+        assertEq(posShares, remaining + 10e18);
+        assertEq(queues.pendingDeposit(alice), remaining + 10e18);
+        assertEq(queues.claimableDeposit(alice), 1_000_000e18 - remaining);
+    }
+
+    /// The 1-wei poisoning: a sliver left behind by a fill rolls into a fresh generation at 1:1, where it is
+    /// an orphan share nobody can claim, so the next joiner is still minted 1:1 and credited in full
+    function testSliverRollsIntoFreshGeneration() public {
         _queueDeposit(alice, 1_000_000e18);
         _queueDeposit(carol, 1);
-        uint256 minRemainder = (1_000_000e18 + 1) / MAX_SHARE_RATIO;
-        assertEq(_settleDeposit(1_000_000e18), 1_000_000e18 + 1 - minRemainder);
+
+        _settle(0, 1_000_000e18, 0);
+
+        (uint256 gen,, uint256 shares, uint256 underlying) = queues.depositQueue();
+        assertEq(gen, 1);
+        assertEq(shares, 1);
+        assertEq(underlying, 1);
+        assertEq(queues.pendingDeposit(alice), 0); // Their carried share rounds to nothing
+        assertEq(queues.pendingDeposit(carol), 0);
 
         _queueDeposit(bob, 100e18);
         (, uint256 bobShares,,) = _depositPosition(bob);
-        assertEq(bobShares, 100e18 * (1_000_000e18 + 1) / minRemainder); // About 1e9 shares per wei
-        _settleDeposit(type(uint256).max);
-        assertEq(_depositGen(), 1);
-        // Rewards are credited rounded down by under totalShares / RAY per conversion: 100 wei here
-        assertApproxEqAbs(queues.claimableDeposit(bob), 100e18, 100);
-        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 100);
-        assertLe(srusds.balanceOf(address(queues)) - queues.claimableDeposit(alice) - queues.claimableDeposit(bob) - queues.claimableDeposit(carol), 200);
+        assertEq(bobShares, 100e18);
+        _settleFraction(10_000);
+        assertEq(queues.claimableDeposit(bob), 100e18);
+        // The orphan wei's reward is stranded, plus up to a wei of generation-0 rounding
+        uint256 stranded = srusds.balanceOf(address(queues)) - queues.claimableDeposit(bob) - queues.claimableDeposit(alice);
+        assertGe(stranded, 1);
+        assertLe(stranded, 2);
     }
 
-    /// Once its generation is drained a request has nothing pending: cancel reverts and pending shows 0, while
-    /// what converted stays claimable. A new request starts a position in the current generation, keeping it
-    function testDrainedGeneration() public {
-        _queueDeposit(alice, 100e18);
-        _settleDeposit(type(uint256).max);
-        assertEq(_depositGen(), 1);
-        assertEq(queues.pendingDeposit(alice), 0);
-        assertEq(queues.claimableDeposit(alice), 100e18);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/not-current-gen");
-        queues.cancelDeposit(alice, alice);
+    /// A fill that leaves so little that the ratio passes RAY carries nothing: it is treated as a drain, the
+    /// dust stays in the contract, and the next generation starts afresh
+    function testRemainderBeyondRayClosesGeneration() public {
+        _queueDeposit(alice, 1e27);
+        for (uint256 i; i < 8; i++) _settleFraction(90_00); // Ratio 1e8
+        _queueDeposit(bob, 1e30);                           // So 1e38 shares
+        (,,, uint256 underlying) = queues.depositQueue();
+        _settle(0, underlying - 1, 0);                      // Ratio about 1e38 + 1e27: beyond RAY
 
-        _queueDeposit(bob, 100e18); // The new generation starts at 1:1
-        _queueDeposit(alice, 50e18);
-        (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) = _depositPosition(alice);
+        (uint256 gen, uint256 oldest, uint256 shares, uint256 left) = queues.depositQueue();
         assertEq(gen, 1);
-        assertEq(shares, 50e18);
-        assertEq(rewardDebt, 0);
-        assertEq(claimable, 100e18);
-        assertEq(queues.pendingDeposit(alice), 50e18);
-        assertEq(queues.claimableDeposit(alice), 100e18);
+        assertEq(oldest, 1);
+        assertEq(shares, 0);
+        assertEq(left, 0);
+        assertEq(queues.pendingDeposit(bob), 0);
+        assertApproxEqAbs(queues.claimableDeposit(bob), 1e30, 1e38 / RAY); // Reward rounding, under shares / RAY for the fill
+        assertEq(susds.balanceOf(address(queues)), 1); // The stranded wei
+    }
 
-        _settleDeposit(75e18);
-        assertEq(queues.claimableDeposit(alice), 125e18);
-        assertEq(queues.claimableDeposit(bob), 50e18);
-        vm.prank(alice); assertEq(queues.cancelDeposit(alice, alice), 25e18);
+    /// Each roll-over divides every open generation's carry by at least MAX_SHARE_RATIO, from RAY, so a
+    /// generation is closed after at most four of them (three here, as each 90% fill rounds the ratio just past
+    /// the cap) and the settlement loop is bounded. Positions in a closed generation have long been credited
+    /// everything but dust
+    function testAtMostFourGenerationsOpen() public {
+        _queueDeposit(alice, 1e27);
+        for (uint256 i; i < 10; i++) {
+            _fillUntilRollover(90_00);
+            assertLe(_depositGen() - _depositOldestGen(), 3);
+            _queueDeposit(carol, 1e27); // Keeps the queue from running out
+        }
+        assertEq(_depositGen(), 10);
+        assertGe(_depositOldestGen(), 7);
+        assertLe(_depositOldestGen(), 8);
+
+        assertEq(queues.pendingDeposit(alice), 0);
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1e27, 40 * 1e27 / RAY); // Rounding, under shares / RAY per fill and roll-over
+        (uint256 gen,,,) = _depositPosition(alice);
+        assertEq(gen, 0);
+        vm.prank(alice); assertApproxEqAbs(queues.claimDeposit(type(uint256).max, alice, alice), 1e27, 40 * 1e27 / RAY);
+    }
+
+    /// The most shares a position can hold: join a generation at a ratio of 1e8 with 1e50 (amount * totalShares
+    /// must fit), for 1e58 shares. Ten roll-overs later it claims everything it put in, in one step
+    function testLargestPositionClaimsInOneStep() public {
+        _queueDeposit(alice, 1e27);
+        for (uint256 i; i < 8; i++) _settleFraction(90_00); // Ratio 1e8
+        _queueDeposit(bob, 1e50);
+        (, uint256 bobShares,,) = _depositPosition(bob);
+        assertEq(bobShares, 1e58);
+
+        for (uint256 i; i < 10; i++) {
+            _fillUntilRollover(90_00);
+            _queueDeposit(carol, 1e27); // Keeps the queue from running out; small enough that amount * totalShares fits
+        }
+        assertEq(_depositGen(), 10);
+
+        assertEq(queues.pendingDeposit(bob), 0);
+        // Reward and carry rounding, under shares / RAY (1e31, a 1e-19th) per fill and per roll-over
+        assertApproxEqAbs(queues.claimableDeposit(bob), 1e50, 40 * 1e58 / RAY);
+        vm.prank(bob); assertApproxEqAbs(queues.claimDeposit(type(uint256).max, bob, bob), 1e50, 40 * 1e58 / RAY);
+    }
+
+    /// A 1e30 stake halved 30 times leaves 5^30 and the carry rounds 625 wei of it away: more than a wei, under
+    /// a wei per token queued. The next carry chains onto the first and loses under shares / RAY again
+    function testCarryRoundsDownByUnderAWeiPerToken() public {
+        _queueDeposit(alice, 1e30);
+        assertEq(_halfFillUntilRollover(), 30);
+
+        (,, uint256 shares, uint256 remaining) = queues.depositQueue();
+        assertEq(remaining, 5 ** 30);
+        assertEq(shares, remaining);
+        // carry = 5^30 * RAY / 1e30 = 931322574615478515.625 rounded down, times 1e30 shares
+        uint256 lost = remaining - queues.pendingDeposit(alice);
+        assertEq(lost, 625);
+        assertLe(lost, 1 + 1e30 / 1e18);
+        assertEq(susds.balanceOf(address(queues)) - queues.pendingDeposit(alice), 625); // Stranded in the contract
+
+        uint256 aliceShares = queues.pendingDeposit(alice);
+        _halfFillUntilRollover();
+        (,,, uint256 remaining2) = queues.depositQueue();
+        assertApproxEqAbs(queues.pendingDeposit(alice), aliceShares * remaining2 / remaining, 1e30 / RAY);
+    }
+
+    /// Whatever the stakes and however far past the cap the last fill pushes the ratio, a carry loses a position
+    /// under 1 + shares / RAY of its remainder, and its shares are under MAX_SHARE_RATIO per wei queued
+    function testFuzzCarryLosesUnderAWeiPerToken(uint256 amountA, uint256 amountB, uint256 lastFillBps) public {
+        amountA     = bound(amountA, 1e18, 1e30);
+        amountB     = bound(amountB, 1, 1e30);
+        lastFillBps = bound(lastFillBps, 91_00, 99_99);
+
+        _queueDeposit(alice, amountA);
+        for (uint256 i; i < 8; i++) _settleFraction(90_00); // Ratio about 1e8
+        _queueDeposit(bob, amountB);                         // So about 1e8 shares per wei
+        (, uint256 bobShares,,) = _depositPosition(bob);
+        assertLt(bobShares, MAX_SHARE_RATIO * amountB);
+        (,, uint256 sharesBefore,) = queues.depositQueue();
+
+        _settleFraction(lastFillBps);
+        assertEq(_depositGen(), 1);
+        (,,, uint256 remaining) = queues.depositQueue();
+
+        // Bob was owed bobShares / sharesBefore of the remainder; his new shares are worth a wei each
+        uint256 lostScaled = bobShares * remaining - queues.pendingDeposit(bob) * sharesBefore;
+        assertLe(lostScaled, sharesBefore + bobShares * sharesBefore / RAY);
     }
 
     /// The redeem queue follows the same rules
-    function testRedeemQueueMinRemainder() public {
+    function testRedeemQueueRollsOver() public {
         uint256 shares = _mintSrUsds(alice, 1_000_000e18);
         _queueRedeem(alice, shares);
-        uint256 minRemainder = shares / MAX_SHARE_RATIO;
 
-        _settle(0, 0, shares - 1);
-        assertEq(queues.pendingRedeem(alice), minRemainder);
-        assertEq(queues.claimableRedeem(alice), shares - minRemainder);
+        _settle(0, 0, shares - 1); // Leaves a wei, far past the cap: rolls over with a carry of RAY / 1e24
+        (uint256 gen, uint256 oldest, uint256 queueShares, uint256 underlying) = queues.redeemQueue();
+        assertEq(gen, 1);
+        assertEq(oldest, 0);
+        assertEq(queueShares, 1);
+        assertEq(underlying, 1);
+        assertEq(queues.pendingRedeem(alice), 1);
+        assertEq(queues.claimableRedeem(alice), 1_000_000e18 - 1);
 
         _settle(0, 0, type(uint256).max);
-        (uint256 gen,,) = queues.redeemQueue();
-        assertEq(gen, 1);
+        (gen, oldest,,) = queues.redeemQueue();
+        assertEq(gen, 2);
+        assertEq(oldest, 2);
         assertEq(queues.pendingRedeem(alice), 0);
         assertEq(queues.claimableRedeem(alice), 1_000_000e18);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/not-current-gen");
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-shares");
         queues.cancelRedeem(alice, alice);
     }
 
@@ -724,17 +974,16 @@ contract SrUsdsQueuesTest is DssTest {
             assertEq(queues.pendingDeposit(alice), 0);
             assertEq(queues.claimableDeposit(alice), depositAmt);
         } else {
-            // The remainder is floored at totalShares / MAX_SHARE_RATIO (shares == depositAmt here)
-            uint256 minRemainder = depositAmt / MAX_SHARE_RATIO;
-            uint256 expected = depositAmt - capacity < minRemainder ? depositAmt - minRemainder : capacity;
-            assertEq(converted, expected);
-            assertEq(_depositGen(), 0);
-            assertEq(queues.pendingDeposit(alice), depositAmt - expected);
-            assertApproxEqAbs(queues.claimableDeposit(alice), expected, 1); // Reward per share and its credit both round down
+            assertEq(converted, capacity);
+            // The generation rolls over once the remainder is under totalShares / MAX_SHARE_RATIO (shares == depositAmt here)
+            bool rolled = depositAmt / (depositAmt - capacity) >= MAX_SHARE_RATIO;
+            assertEq(_depositGen(), rolled ? 1 : 0);
+            assertApproxEqAbs(queues.pendingDeposit(alice), depositAmt - capacity, rolled ? 2 : 0); // Carry rounding
+            assertApproxEqAbs(queues.claimableDeposit(alice), capacity, 1); // Reward per share and its credit both round down
         }
     }
 
-    /// However joins, fills, drains, cancels and claims interleave, every user ends up with what they put in
+    /// However joins, fills, roll-overs, drains, cancels and claims interleave, every user ends up with what they put in
     /// (as srUSDS at 1:1 plus returned sUSDS), and the contract keeps only rounding dust
     function testFuzzEveryoneIsMadeWhole(uint256 seed) public {
         address[3] memory users = [alice, bob, carol];
@@ -749,14 +998,14 @@ contract SrUsdsQueuesTest is DssTest {
                 _queueDeposit(users[u], amt);
                 put[u] += amt;
             }
-            if (r >> 64 & 7 == 0 && queues.pendingDeposit(users[u]) > 0) { // Pending is 0 in a drained generation
+            if (r >> 64 & 7 == 0 && queues.pendingDeposit(users[u]) > 0) { // Pending is 0 in a closed generation
                 vm.prank(users[u]); got[u] += queues.cancelDeposit(users[u], users[u]);
             }
             if (r >> 96 & 7 == 0) {
                 vm.prank(users[u]); got[u] += queues.claimDeposit(type(uint256).max, users[u], users[u]);
             }
-            // Fills of any size, clipped by the contract when they would leave too little; now and then a drain
-            _settleFraction(r >> 104 & 15 == 0 ? 10_000 : bound(r >> 128, 0, 99_99));
+            // Fills of any size, mostly steep so that generations roll over often; now and then a drain
+            _settleFraction(r >> 104 & 15 == 0 ? 10_000 : bound(r >> 128, 50_00, 99_99));
         }
 
         _settleFraction(10_000);

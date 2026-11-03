@@ -47,7 +47,15 @@ interface ShareLike is TokenLike {
 ///      the tokens on cancel or claim. An operator approved through setOperator can act as owner or controller.
 ///
 ///      Both queues implement the generation-based model where all requests in the same generation share
-///      proportionally in the conversion capacity allocated to that generation.
+///      proportionally in the conversion capacity allocated to that generation. A generation ends when it is
+///      drained, or when partial conversions have pushed its shares per unit of underlying to MAX_SHARE_RATIO:
+///      then what is left rolls into a fresh generation at 1:1. Rolled-over generations stay open: each
+///      settlement credits them too, in their own shares, through a cumulative carry factor to the current
+///      generation. So a position never needs to walk the roll-overs it was left behind by: claiming reads its
+///      own generation's accumulator, and a request or cancellation carries it over in one step. The carry
+///      factor shrinks by at least MAX_SHARE_RATIO per roll-over, so at most 4 generations are ever open and
+///      the settlement loop over them is bounded. Being a per-share factor in ray, each roll-over rounds what a
+///      position has left down by under shares / RAY, the same bound as the reward rounding of one conversion.
 contract SrUsdsQueues is UUPSUpgradeable {
 
     // --- Structs ---
@@ -60,10 +68,12 @@ contract SrUsdsQueues is UUPSUpgradeable {
     }
 
     struct Queue {
-        uint256 currentGen;
-        uint256 totalShares;
+        uint256 currentGen;                               // Generation new requests join
+        uint256 oldestGen;                                // Oldest generation still open; everything before is closed
+        uint256 totalShares;                              // Internal queue shares of the current generation
         uint256 totalUnderlying;
-        mapping(uint256 gen => uint256) rewardPerToken; // Cumulative reward per internal queue share [ray]
+        mapping(uint256 gen => uint256)  rewardPerToken;  // Cumulative reward per internal queue share of that generation [ray]
+        mapping(uint256 gen => uint256)  carry;           // Current-generation shares per share of a rolled-over generation [ray]
         mapping(address usr => Position) positions;
     }
 
@@ -78,8 +88,8 @@ contract SrUsdsQueues is UUPSUpgradeable {
     uint32  public startDay;         // First settlement day, then every `period` days after it [days since epoch]
     uint32  public lastSettleDay;    // Day of the last settlement [days since epoch]
 
-    Queue public depositQueue;       // Underlying = assets, reward = shares (getter: currentGen, totalShares, totalUnderlying)
-    Queue public redeemQueue;        // Underlying = shares, reward = assets (getter: currentGen, totalShares, totalUnderlying)
+    Queue public depositQueue;       // Underlying = assets, reward = shares (getter: currentGen, oldestGen, totalShares, totalUnderlying)
+    Queue public redeemQueue;        // Underlying = shares, reward = assets (getter: currentGen, oldestGen, totalShares, totalUnderlying)
 
     mapping(address controller => mapping(address operator => bool)) public isOperator;
 
@@ -91,8 +101,9 @@ contract SrUsdsQueues is UUPSUpgradeable {
     // --- Constants ---
 
     uint256 constant RAY = 10 ** 27;
-    // Largest totalShares:totalUnderlying a generation may carry. Conversion is the only thing
-    // that raises it, so bounding the remainder a conversion may leave bounds the ratio itself.
+    // Largest totalShares:totalUnderlying a generation may carry. Conversion is the only thing that raises
+    // it, so a generation is rolled over as soon as a conversion pushes it to the cap. Each roll-over divides
+    // the carry of every open generation by at least this, from RAY, so one is closed after 4 roll-overs
     uint256 constant MAX_SHARE_RATIO = 10 ** 9;
 
     // --- Events ---
@@ -197,17 +208,6 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
         converted = capacity < totalUnderlying ? capacity : totalUnderlying;
 
-        // A conversion removes underlying but keeps all shares, so the shares per unit of underlying go up.
-        // With only a tiny remainder left, the next joiner would get a huge number of shares and every later
-        // reward per share would round down to zero. So either drain the generation completely or leave at
-        // least totalShares / MAX_SHARE_RATIO behind.
-        if (converted < totalUnderlying) {
-            uint256 minRemainder = totalShares / MAX_SHARE_RATIO;
-            if (totalUnderlying - converted < minRemainder) {
-                converted = totalUnderlying > minRemainder ? totalUnderlying - minRemainder : 0;
-            }
-        }
-
         // Nothing to convert (empty queue or no capacity); also avoids dividing by totalShares == 0 below
         if (converted == 0) return (0, 0);
 
@@ -215,18 +215,47 @@ contract SrUsdsQueues is UUPSUpgradeable {
                    ? share.deposit(converted, address(this))
                    : share.redeem(converted, address(this), address(this));
 
-        // Update reward accumulator
-        queue.rewardPerToken[queue.currentGen] += received * RAY / totalShares;
+        // Credit the reward to every open generation, each in its own shares: a rolled-over generation's share
+        // is worth `carry` of the current one's, and the current one's is worth RAY of itself
+        uint256 gen = queue.currentGen;
+        uint256 oldest = queue.oldestGen;
+        for (uint256 g = oldest; g < gen; g++) {
+            queue.rewardPerToken[g] += received * queue.carry[g] / totalShares;
+        }
+        queue.rewardPerToken[gen] += received * RAY / totalShares;
 
         // Reduce underlying
         totalUnderlying -= converted;
-        queue.totalUnderlying = totalUnderlying;
 
-        // If generation fully drained, finalize and advance
-        if (totalUnderlying == 0) {
-            queue.currentGen++;
-            queue.totalShares = 0;
+        // A conversion removes underlying but keeps all shares, so the shares per unit of underlying go up and
+        // nothing brings them down again within a generation. Left unchecked, a late joiner would get a huge
+        // number of shares and every later reward per share would round down to zero. So the generation ends
+        // either when it is drained, or when the ratio reaches the cap: then the remainder rolls into a fresh
+        // generation at 1:1, and `carry` keeps the rolled-over generations credited from here on
+        if (totalUnderlying == 0 || totalShares / totalUnderlying >= MAX_SHARE_RATIO) {
+            uint256 carry = totalUnderlying * RAY / totalShares; // Next-generation shares per current share
+            if (carry == 0) {
+                // Drained, or so little left (ratio beyond RAY) that no position could carry anything:
+                // every generation closes and the dust, if any, stays here
+                oldest = gen + 1;
+                totalShares = 0;
+                totalUnderlying = 0;
+            } else {
+                // Roll over: chain the new factor into every open generation, closing those it zeroes
+                // (the oldest carry the smallest factors, so the zeroes are a prefix)
+                for (uint256 g = oldest; g < gen; g++) {
+                    uint256 c = queue.carry[g] * carry / RAY;
+                    queue.carry[g] = c;
+                    if (c == 0 && g == oldest) oldest++;
+                }
+                queue.carry[gen] = carry;
+                totalShares = totalUnderlying;
+            }
+            queue.currentGen = gen + 1;
+            queue.oldestGen = oldest;
+            queue.totalShares = totalShares;
         }
+        queue.totalUnderlying = totalUnderlying;
     }
 
     /// @notice Revalue the share by `profit` and convert both queues up to the given capacities, once per window
@@ -246,11 +275,31 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     // --- Internal Queue Logic ---
 
-    /// @dev Move what has converted since the last checkpoint into the stored claimable balance, without paying it out
+    /// @dev Move what has converted since the last checkpoint into the stored claimable balance, without paying it
+    ///      out. The position's own generation keeps being credited after a roll-over, so this is enough to claim
     function _checkpoint(Queue storage queue, Position storage pos) internal {
         uint256 rpt = queue.rewardPerToken[pos.gen];
         pos.claimable += pos.shares * (rpt - pos.rewardDebt) / RAY;
         pos.rewardDebt = rpt;
+    }
+
+    /// @dev The position's shares expressed in the current generation: carried over if its generation rolled
+    ///      over, nothing if it closed
+    function _carried(Queue storage queue, Position storage pos) internal view returns (uint256 shares) {
+        uint256 gen = pos.gen;
+        if (gen == queue.currentGen) return pos.shares;
+        return gen < queue.oldestGen ? 0 : pos.shares * queue.carry[gen] / RAY;
+    }
+
+    /// @dev Checkpoint, then bring the position into the current generation, carrying its pending over
+    function _migrate(Queue storage queue, Position storage pos) internal {
+        _checkpoint(queue, pos);
+        uint256 gen = queue.currentGen;
+        if (pos.gen != gen) {
+            pos.shares = _carried(queue, pos);
+            pos.gen = gen;
+            pos.rewardDebt = queue.rewardPerToken[gen];
+        }
     }
 
     /// @dev msg.sender must be `usr` or an operator approved by `usr`
@@ -266,7 +315,11 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
         Position storage pos = queue.positions[controller];
 
-        _checkpoint(queue, pos);
+        // Bring the position into the current generation; its claimable balance is kept
+        _migrate(queue, pos);
+
+        // Escrow the queued amount from the owner
+        token.transferFrom(owner, address(this), amount);
 
         // Calculate internal queue shares to mint
         uint256 queueShares = queue.totalShares == 0
@@ -275,20 +328,9 @@ contract SrUsdsQueues is UUPSUpgradeable {
         require(queueShares > 0, "SrUsdsQueues/zero-shares");
 
         // Update state
-        uint256 gen = queue.currentGen;
         queue.totalUnderlying += amount;
         queue.totalShares += queueShares;
-        if (pos.gen < gen) {
-            // Start a new position in the current generation; the old one's claimable balance is kept
-            pos.gen = gen;
-            pos.shares = queueShares;
-            pos.rewardDebt = queue.rewardPerToken[gen];
-        } else {
-            pos.shares += queueShares;
-        }
-
-        // Escrow the queued amount from the owner
-        token.transferFrom(owner, address(this), amount);
+        pos.shares += queueShares;
     }
 
     function _cancel(Queue storage queue, TokenLike token, address receiver, address controller) internal returns (uint256 amount) {
@@ -296,11 +338,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
         require(receiver != address(0), "SrUsdsQueues/receiver-zero-address");
         require(!_locked(), "SrUsdsQueues/queue-locked");
         Position storage pos = queue.positions[controller];
-        require(pos.gen == queue.currentGen, "SrUsdsQueues/not-current-gen");
-        require(pos.shares > 0, "SrUsdsQueues/zero-shares");
 
-        // Keep whatever already converted claimable
-        _checkpoint(queue, pos);
+        // Keep whatever already converted claimable, and bring the position into the current generation
+        _migrate(queue, pos);
+        require(pos.shares > 0, "SrUsdsQueues/zero-shares");
 
         // Calculate the still pending amount
         amount = pos.shares * queue.totalUnderlying / queue.totalShares;
@@ -387,27 +428,35 @@ contract SrUsdsQueues is UUPSUpgradeable {
         return _locked();
     }
 
+    function _pending(Queue storage queue, address controller) internal view returns (uint256) {
+        Position storage pos = queue.positions[controller];
+        if (pos.shares == 0) return 0;
+        uint256 shares = _carried(queue, pos); // Non-zero only if its generation is open, so totalShares is too
+        return shares == 0 ? 0 : shares * queue.totalUnderlying / queue.totalShares;
+    }
+
+    function _claimable(Queue storage queue, address controller) internal view returns (uint256) {
+        Position storage pos = queue.positions[controller];
+        return pos.claimable + pos.shares * (queue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
+    }
+
     /// @notice Assets still waiting to be converted to shares
     function pendingDeposit(address controller) external view returns (uint256 assets) {
-        Position storage pos = depositQueue.positions[controller];
-        return (pos.shares == 0 || pos.gen < depositQueue.currentGen) ? 0 : pos.shares * depositQueue.totalUnderlying / depositQueue.totalShares;
+        return _pending(depositQueue, controller);
     }
 
     /// @notice Shares still waiting to be converted to assets
     function pendingRedeem(address controller) external view returns (uint256 shares) {
-        Position storage pos = redeemQueue.positions[controller];
-        return (pos.shares == 0 || pos.gen < redeemQueue.currentGen) ? 0 : pos.shares * redeemQueue.totalUnderlying / redeemQueue.totalShares;
+        return _pending(redeemQueue, controller);
     }
 
     /// @notice Shares converted from deposits and ready to claim
     function claimableDeposit(address controller) external view returns (uint256 shares) {
-        Position memory pos = depositQueue.positions[controller];
-        return pos.claimable + pos.shares * (depositQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
+        return _claimable(depositQueue, controller);
     }
 
     /// @notice Assets converted from redeems and ready to claim
     function claimableRedeem(address controller) external view returns (uint256 assets) {
-        Position memory pos = redeemQueue.positions[controller];
-        return pos.claimable + pos.shares * (redeemQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
+        return _claimable(redeemQueue, controller);
     }
 }

@@ -21,9 +21,11 @@ import "erc4626-tests/ERC4626.test.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import { VatMock } from "test/mocks/VatMock.sol";
+import { UsdsMock } from "test/mocks/UsdsMock.sol";
+import { UsdsJoinMock } from "test/mocks/UsdsJoinMock.sol";
 import { SUsdsMock } from "test/mocks/SUsdsMock.sol";
 
-import { SrUsds } from "src/srusds/SrUsds.sol";
+import { SrUsds } from "src/SrUsds.sol";
 
 abstract contract ERC4626TestReduced is ERC4626Test {
     function test_maxDeposit(Init memory) public override { vm.skip(true); }
@@ -49,20 +51,27 @@ contract SrUsdsERC4626Test is ERC4626TestReduced {
 
     using stdStorage for StdStorage;
 
-    VatMock vat;
-    SUsdsMock susds;
+    VatMock      vat;
+    UsdsMock     usds;
+    UsdsJoinMock join;
+    SUsdsMock    susds;
 
     SrUsds srusds;
 
     uint256 constant private RAY = 10**27;
 
     function setUp() public override {
-        vat = new VatMock();
-        susds = new SUsdsMock();
+        vat   = new VatMock();
+        usds  = new UsdsMock();
+        join  = new UsdsJoinMock(address(vat), address(usds));
+        susds = new SUsdsMock(address(usds));
+        usds.rely(address(join));
+        usds.rely(address(susds));
 
-        srusds = SrUsds(address(new ERC1967Proxy(address(new SrUsds(address(susds))), abi.encodeCall(SrUsds.initialize, ()))));
+        srusds = SrUsds(address(new ERC1967Proxy(address(new SrUsds(address(join), address(0x5EE), address(susds))), abi.encodeCall(SrUsds.initialize, ()))));
+        vat.rely(address(srusds)); // Gains are generated through vat.suck
 
-        deal(address(susds), address(this), 1_100e18);
+        susds.mint(address(this), 1_100e18);
         susds.approve(address(srusds), 1_100e18);
         srusds.deposit(1_000e18, address(this));
         srusds.settle(100e18);
@@ -96,14 +105,8 @@ contract SrUsdsERC4626Test is ERC4626TestReduced {
         uint256 supply = srusds.totalSupply();
         if (supply > 0) {
             uint256 nChi = gain * RAY / supply + srusds.chi();
-            uint256 chiRho = (block.timestamp << 192) + nChi;
-            vm.store(
-                address(srusds),
-                bytes32(uint256(5)),
-                bytes32(chiRho)
-            );
+            vm.store(address(srusds), bytes32(uint256(5)), bytes32(nChi)); // chi is the 6th storage variable
             assertEq(uint256(srusds.chi()), nChi);
-            // assertEq(uint256(srusds.rho()), block.timestamp);
             susds.mint(address(srusds), gain);
         }
     }

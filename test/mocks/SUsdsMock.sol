@@ -25,8 +25,23 @@ interface IERC1271 {
     ) external view returns (bytes4);
 }
 
+interface UsdsLike {
+    function mint(address, uint256) external;
+    function burn(address, uint256) external;
+}
+
+/// @dev sUSDS as SrUsds sees it: an ERC-20 plus the ERC-4626 mint/redeem it settles through. Not backed: USDS
+///      is burned on mint and minted on redeem (the mock must be a ward of the USDS mock), at a settable `chi`
 contract SUsdsMock {
     mapping (address => uint256) public wards;
+
+    // --- ERC4626 ---
+    UsdsLike public immutable usds;
+    uint256  public chi = RAY; // USDS per sUSDS [ray]
+    uint256  constant RAY = 10 ** 27;
+
+    event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
+    event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
 
     // --- ERC20 Data ---
     string  public constant name     = "SUSDS";
@@ -55,7 +70,9 @@ contract SUsdsMock {
         _;
     }
 
-    constructor() {
+    constructor(address usds_) {
+        usds = UsdsLike(usds_);
+
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
 
@@ -245,5 +262,73 @@ contract SUsdsMock {
         bytes32 s
     ) external {
         permit(owner, spender, value, deadline, abi.encodePacked(r, s, v));
+    }
+
+    // --- ERC4626 ---
+
+    function setChi(uint256 chi_) external auth {
+        chi = chi_;
+    }
+
+    function asset() external view returns (address) {
+        return address(usds);
+    }
+
+    function convertToAssets(uint256 shares) public view returns (uint256) {
+        return shares * chi / RAY;
+    }
+
+    function convertToShares(uint256 assets) public view returns (uint256) {
+        return assets * RAY / chi;
+    }
+
+    function previewMint(uint256 shares) public view returns (uint256 assets) {
+        assets = (shares * chi + RAY - 1) / RAY; // Rounded up, as sUSDS does
+    }
+
+    function previewRedeem(uint256 shares) public view returns (uint256) {
+        return convertToAssets(shares);
+    }
+
+    function mint(uint256 shares, address receiver) external returns (uint256 assets) {
+        assets = previewMint(shares);
+        usds.burn(msg.sender, assets);
+        _mint(receiver, shares);
+        emit Deposit(msg.sender, receiver, assets, shares);
+    }
+
+    function deposit(uint256 assets, address receiver) external returns (uint256 shares) {
+        shares = convertToShares(assets);
+        usds.burn(msg.sender, assets);
+        _mint(receiver, shares);
+        emit Deposit(msg.sender, receiver, assets, shares);
+    }
+
+    function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets) {
+        assets = convertToAssets(shares);
+        _burn(owner, shares);
+        usds.mint(receiver, assets);
+        emit Withdraw(msg.sender, receiver, owner, assets, shares);
+    }
+
+    function _mint(address to, uint256 value) internal {
+        balanceOf[to] += value;
+        totalSupply   += value;
+        emit Transfer(address(0), to, value);
+    }
+
+    function _burn(address from, uint256 value) internal {
+        uint256 balance = balanceOf[from];
+        require(balance >= value, "SUsds/insufficient-balance");
+        if (from != msg.sender) {
+            uint256 allowed = allowance[from][msg.sender];
+            if (allowed != type(uint256).max) {
+                require(allowed >= value, "SUsds/insufficient-allowance");
+                allowance[from][msg.sender] = allowed - value;
+            }
+        }
+        balanceOf[from] = balance - value;
+        totalSupply    -= value;
+        emit Transfer(from, address(0), value);
     }
 }

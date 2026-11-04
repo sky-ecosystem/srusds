@@ -27,8 +27,6 @@ contract SrUsdsQueuesTest is DssTest {
     address operator = address(0x0b);
     address constant VOW = address(0x5EE);
 
-    uint256 constant MAX_SHARE_RATIO = 10 ** 9;
-
     event Settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity, uint256 depositsConverted, uint256 depositsReceived, uint256 redeemsConverted, uint256 redeemsReceived);
     event SetOperator(address indexed controller, address indexed operator, bool approved);
     event QueueDeposit(address indexed controller, address indexed owner, address sender, uint256 assets);
@@ -101,46 +99,40 @@ contract SrUsdsQueuesTest is DssTest {
         queues.settle(profit, depositCapacity, redeemCapacity);
     }
 
+    /// @dev Everything still to convert: unconverted in the pool and held for the next settlement
+    function _depositPending() internal view returns (uint256) {
+        (,, uint256 unconverted,, uint256 held) = queues.depositQueue();
+        return unconverted + held;
+    }
+
     /// @dev Settle the deposit queue with no profit, returning what converted
     function _settleDeposit(uint256 capacity) internal returns (uint256 converted) {
-        (,, uint256 before) = queues.depositQueue();
+        uint256 before = _depositPending();
         _settle(0, capacity, 0);
-        (,, uint256 after_) = queues.depositQueue();
-        converted = before - after_;
+        converted = before - _depositPending();
     }
 
-    /// @dev Settle converting `bps` of the deposit queue
+    /// @dev Settle converting `bps` of what is queued in the deposit queue
     function _settleFraction(uint256 bps) internal returns (uint256 converted) {
-        (,, uint256 before) = queues.depositQueue();
-        converted = _settleDeposit(before * bps / 10_000);
+        converted = _settleDeposit(_depositPending() * bps / 10_000);
     }
 
-    function _depositGen() internal view returns (uint256 gen) {
-        (gen,,) = queues.depositQueue();
-    }
-
-    function _depositRatio() internal view returns (uint256) {
-        (, uint256 shares, uint256 underlying) = queues.depositQueue();
-        return underlying == 0 ? 0 : shares / underlying; // Drained: nothing to measure
-    }
-
-    /// @dev A stored position, read straight from storage. depositQueue is at slot 2 and redeemQueue at slot 7;
-    ///      positions is the Queue struct's 5th member (after currentGen, totalShares, totalUnderlying and
-    ///      rewardPerToken), so the mappings live at slots 6 and 11
-    function _position(uint256 slot, address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
+    /// @dev A stored position, read straight from storage. depositQueue is at slot 2 and redeemQueue at slot 8;
+    ///      positions is the Queue struct's 6th member (after cycle, units, unconverted, converted and held), so
+    ///      the mappings live at slots 7 and 13
+    function _position(uint256 slot, address usr) internal view returns (uint256 units, uint256 cycle, uint256 claimable) {
         bytes32 base = keccak256(abi.encode(usr, slot));
-        gen        = uint256(vm.load(address(queues), base));
-        shares     = uint256(vm.load(address(queues), bytes32(uint256(base) + 1)));
-        rewardDebt = uint256(vm.load(address(queues), bytes32(uint256(base) + 2)));
-        claimable  = uint256(vm.load(address(queues), bytes32(uint256(base) + 3)));
+        units     = uint256(vm.load(address(queues), base));
+        cycle     = uint256(vm.load(address(queues), bytes32(uint256(base) + 1)));
+        claimable = uint256(vm.load(address(queues), bytes32(uint256(base) + 2)));
     }
 
-    function _depositPosition(address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
-        return _position(6, usr);
+    function _depositPosition(address usr) internal view returns (uint256 units, uint256 cycle, uint256 claimable) {
+        return _position(7, usr);
     }
 
-    function _redeemPosition(address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
-        return _position(11, usr);
+    function _redeemPosition(address usr) internal view returns (uint256 units, uint256 cycle, uint256 claimable) {
+        return _position(13, usr);
     }
 
     // --- Administration ---
@@ -296,14 +288,15 @@ contract SrUsdsQueuesTest is DssTest {
         queues.queueDeposit(100e18, alice, alice, 7);
         vm.stopPrank();
 
-        (uint256 gen, uint256 shares, uint256 underlying) = queues.depositQueue();
-        assertEq(gen, 0);
-        assertEq(shares, 100e18);
-        assertEq(underlying, 100e18);
-        (uint256 posGen, uint256 posShares, uint256 rewardDebt, uint256 claimable) = _depositPosition(alice);
-        assertEq(posGen, 0);
-        assertEq(posShares, 100e18);
-        assertEq(rewardDebt, 0);
+        (uint256 cycle, uint256 units, uint256 unconverted, uint256 converted, uint256 held) = queues.depositQueue();
+        assertEq(cycle, 0);
+        assertEq(units, 0);     // Held until the next settlement, not in the pool yet
+        assertEq(unconverted, 0);
+        assertEq(converted, 0);
+        assertEq(held, 100e18);
+        (uint256 posUnits, uint256 posCycle, uint256 claimable) = _depositPosition(alice);
+        assertEq(posUnits, 100e18);
+        assertEq(posCycle, 0);
         assertEq(claimable, 0);
         assertEq(susds.balanceOf(address(queues)), 100e18);
         assertEq(susds.balanceOf(alice), 0);
@@ -320,10 +313,11 @@ contract SrUsdsQueuesTest is DssTest {
         queues.queueRedeem(shares, alice, alice);
         vm.stopPrank();
 
-        (uint256 gen, uint256 queueShares, uint256 underlying) = queues.redeemQueue();
-        assertEq(gen, 0);
-        assertEq(queueShares, shares);
-        assertEq(underlying, shares);
+        (uint256 cycle, uint256 units, uint256 unconverted,, uint256 held) = queues.redeemQueue();
+        assertEq(cycle, 0);
+        assertEq(units, 0);
+        assertEq(unconverted, 0);
+        assertEq(held, shares);
         assertEq(srusds.balanceOf(address(queues)), shares);
         assertEq(srusds.balanceOf(alice), 0);
         assertEq(queues.pendingRedeem(alice), shares);
@@ -391,28 +385,102 @@ contract SrUsdsQueuesTest is DssTest {
         queues.claimDeposit(0, alice, alice);
     }
 
-    function testQueueTwiceAddsShares() public {
+    function testQueueTwiceAddsUnits() public {
         _queueDeposit(alice, 100e18);
         _queueDeposit(alice, 50e18);
-        (, uint256 shares,,) = _depositPosition(alice);
-        assertEq(shares, 150e18);
+        (uint256 units,,) = _depositPosition(alice);
+        assertEq(units, 150e18);
         assertEq(queues.pendingDeposit(alice), 150e18);
     }
 
-    /// Shares are minted at the generation's current ratio, so a later join gets the same claim per unit
-    function testJoinAfterPartialFillIsProRata() public {
+    /// A request made after a settlement is held: it joins the pool at the next one and takes no part in what
+    /// was converted before, as long as the others have set their converted part aside (see the next test)
+    function testHeldRequestJoinsAtNextSettlement() public {
         _queueDeposit(alice, 100e18);
         _settleDeposit(50e18);
+        vm.prank(alice); queues.claimDeposit(0, alice, alice); // Sets alice's 50 aside, queues her other 50 again
         _queueDeposit(bob, 50e18);
 
-        (, uint256 bobShares,,) = _depositPosition(bob);
-        assertEq(bobShares, 100e18); // 50 assets * 100 shares / 50 underlying
+        (, uint256 units,,, uint256 held) = queues.depositQueue();
+        assertEq(units, 0);
+        assertEq(held, 100e18);
         assertEq(queues.pendingDeposit(alice), 50e18);
         assertEq(queues.pendingDeposit(bob), 50e18);
+        assertEq(queues.claimableDeposit(bob), 0);
 
         _settleDeposit(50e18);
         assertEq(queues.claimableDeposit(alice), 75e18);
         assertEq(queues.claimableDeposit(bob), 25e18);
+    }
+
+    // --- Fairness at claim time ---
+
+    /// what Alice leaves in the pool over a settlement is shared with Bob, who joins then, and
+    /// she gets a larger share of the pending side instead. Values are kept, converted amounts are not
+    function testUnclaimedIsSharedAtNextSettlement() public {
+        uint256 shares = _mintSrUsds(alice, 100e18);
+        _queueRedeem(alice, shares);
+        _settle(0, 0, 90e18);
+        assertEq(queues.claimableRedeem(alice), 90e18);
+        assertEq(queues.pendingRedeem(alice), 10e18);
+
+        _queueRedeem(bob, _mintSrUsds(bob, 100e18));
+        _settle(0, 0, 10e18);
+        assertEq(queues.claimableRedeem(alice), 50e18);
+        assertEq(queues.pendingRedeem(alice), 50e18);
+        assertEq(queues.claimableRedeem(bob), 50e18);
+        assertEq(queues.pendingRedeem(bob), 50e18);
+
+        vm.prank(alice); assertEq(queues.claimRedeem(type(uint256).max, alice, alice), 50e18);
+        vm.prank(bob);   assertEq(queues.claimRedeem(type(uint256).max, bob, bob), 50e18);
+        _settle(0, 0, type(uint256).max);
+        vm.prank(alice); assertEq(queues.claimRedeem(type(uint256).max, alice, alice), 50e18);
+        vm.prank(bob);   assertEq(queues.claimRedeem(type(uint256).max, bob, bob), 50e18);
+        assertEq(susds.balanceOf(alice), 100e18);
+        assertEq(susds.balanceOf(bob), 100e18);
+    }
+
+    /// The same, with Alice claiming within the cycle: her 90 are hers and Bob only shares the next conversion
+    function testClaimedIsNotShared() public {
+        uint256 shares = _mintSrUsds(alice, 100e18);
+        _queueRedeem(alice, shares);
+        _settle(0, 0, 90e18);
+        vm.prank(alice); assertEq(queues.claimRedeem(type(uint256).max, alice, alice), 90e18);
+
+        _queueRedeem(bob, _mintSrUsds(bob, 100e18));
+        _settle(0, 0, 10e18);
+        assertEq(queues.claimableRedeem(alice), uint256(10e18) * 10 / 110);
+        assertEq(queues.pendingRedeem(alice), uint256(100e18) * 10 / 110); // Both shares round down
+        assertEq(queues.claimableRedeem(bob), uint256(10e18) * 100 / 110);
+    }
+
+    /// Any action of the controller sets the converted part aside, not only a claim
+    function testAnyActionSetsConvertedAside() public {
+        _queueDeposit(alice, 100e18);
+        _settleDeposit(40e18);
+        _queueDeposit(alice, 1); // Touches the position
+        (,, uint256 stored) = _depositPosition(alice);
+        assertEq(stored, 40e18);
+
+        _queueDeposit(bob, 1_000_000e18);
+        _settleDeposit(0);
+        assertEq(queues.claimableDeposit(alice), 40e18); // Bob's join did not dilute what was set aside
+        assertEq(queues.pendingDeposit(alice), 60e18 + 1);
+    }
+
+    /// The converted part of a redeem left in the pool over a settlement is exposed again to the share's losses
+    function testUnclaimedRedeemIsExposedToLoss() public {
+        uint256 shares = _mintSrUsds(alice, 100e18);
+        _queueRedeem(alice, shares);
+        _settle(0, 0, 90e18);
+        _queueRedeem(bob, _mintSrUsds(bob, 100e18));
+
+        _settle(-55e18, 0, 0); // Half of the 110 srUSDS outstanding (all of it queued): chi 0.5
+        assertEq(srusds.chi(), 0.5e27);
+        assertEq(queues.claimableRedeem(alice), 45e18);
+        assertEq(queues.pendingRedeem(alice), 55e18);                    // 55 srUSDS, now worth 27.5 sUSDS
+        assertEq(srusds.convertToAssets(queues.pendingRedeem(alice)), 27.5e18);
+        // Had she claimed in time: 90 sUSDS plus 10 srUSDS worth 5
     }
 
     // --- Settle ---
@@ -427,37 +495,52 @@ contract SrUsdsQueuesTest is DssTest {
         emit Settle(0, 60e18, 30e18, 60e18, 60e18, 30e18, 30e18);
         queues.settle(0, 60e18, 30e18);
 
-        (,, uint256 depositUnderlying) = queues.depositQueue();
-        (,, uint256 redeemUnderlying) = queues.redeemQueue();
-        assertEq(depositUnderlying, 40e18);
-        assertEq(redeemUnderlying, 70e18);
+        (uint256 cycle, uint256 units, uint256 unconverted, uint256 converted, uint256 held) = queues.depositQueue();
+        assertEq(cycle, 1);
+        assertEq(units, 100e18);
+        assertEq(unconverted, 40e18);
+        assertEq(converted, 60e18);
+        assertEq(held, 0);
+        (cycle, units, unconverted, converted, held) = queues.redeemQueue();
+        assertEq(cycle, 1);
+        assertEq(units, 100e18);
+        assertEq(unconverted, 70e18);
+        assertEq(converted, 30e18);
+        assertEq(held, 0);
         assertEq(queues.claimableDeposit(alice), 60e18);
         assertEq(queues.claimableRedeem(bob), 30e18);
         assertEq(srusds.balanceOf(address(queues)), 60e18 + 70e18); // Converted deposits and pending redeems
         assertEq(susds.balanceOf(address(queues)), 40e18 + 30e18);  // Pending deposits and converted redeems
     }
 
-    function testSettleFullCapacityEndsGeneration() public {
+    function testSettleFullCapacity() public {
         _queueDeposit(alice, 100e18);
         assertEq(_settleDeposit(type(uint256).max), 100e18);
 
-        (uint256 gen, uint256 shares, uint256 underlying) = queues.depositQueue();
-        assertEq(gen, 1);
-        assertEq(shares, 0);
-        assertEq(underlying, 0);
+        (uint256 cycle, uint256 units, uint256 unconverted, uint256 converted,) = queues.depositQueue();
+        assertEq(cycle, 1);
+        assertEq(units, 100e18);
+        assertEq(unconverted, 0);
+        assertEq(converted, 100e18);
         assertEq(queues.pendingDeposit(alice), 0);
         assertEq(queues.claimableDeposit(alice), 100e18);
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/nothing-pending");
+        queues.cancelDeposit(alice, alice);
     }
 
     function testSettleZeroCapacityAndEmptyQueue() public {
         _queueDeposit(alice, 100e18);
         assertEq(_settleDeposit(0), 0);
         assertEq(queues.pendingDeposit(alice), 100e18);
-        assertEq(_depositGen(), 0);
+        (uint256 cycle, uint256 units,,,) = queues.depositQueue();
+        assertEq(cycle, 1); // Every settlement is a cycle, converting or not
+        assertEq(units, 100e18);
 
         vm.prank(alice); queues.cancelDeposit(alice, alice);
-        assertEq(_settleDeposit(100e18), 0); // Nothing queued: converts nothing, ends nothing
-        assertEq(_depositGen(), 0);
+        assertEq(_settleDeposit(100e18), 0); // Nothing queued: converts nothing
+        (cycle, units,,,) = queues.depositQueue();
+        assertEq(cycle, 2);
+        assertEq(units, 0);
     }
 
     /// The share is revalued before converting: deposits enter at the new price, redeems leave at it
@@ -473,7 +556,7 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.claimableRedeem(bob), 150e18);
     }
 
-    /// Every position in a generation gets the same fraction of each conversion, whenever it joined
+    /// Every position in the pool gets the same fraction of each conversion, whenever it joined (the README example)
     function testProportionalDistribution() public {
         _queueDeposit(alice, 100e18);
         _queueDeposit(bob, 300e18);
@@ -483,10 +566,12 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.pendingDeposit(alice), 50e18);
         assertEq(queues.pendingDeposit(bob), 150e18);
 
+        vm.prank(alice); queues.claimDeposit(type(uint256).max, alice, alice);
+        vm.prank(bob);   queues.claimDeposit(type(uint256).max, bob, bob);
         _queueDeposit(carol, 100e18);
         _settleDeposit(150e18);
-        assertEq(queues.claimableDeposit(alice), 75e18);
-        assertEq(queues.claimableDeposit(bob), 225e18);
+        assertEq(queues.claimableDeposit(alice), 25e18);
+        assertEq(queues.claimableDeposit(bob), 75e18);
         assertEq(queues.claimableDeposit(carol), 50e18);
     }
 
@@ -504,13 +589,26 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(susds.balanceOf(bob), 60e18);
         assertEq(queues.pendingDeposit(alice), 0);
         assertEq(queues.claimableDeposit(alice), 40e18);
-        (uint256 gen, uint256 shares, uint256 underlying) = queues.depositQueue();
-        assertEq(gen, 0);     // Cancelling does not end the generation
-        assertEq(shares, 0);
-        assertEq(underlying, 0);
+        (uint256 posUnits, uint256 posCycle, uint256 claimable) = _depositPosition(alice);
+        assertEq(posUnits, 0);
+        assertEq(posCycle, 0);
+        assertEq(claimable, 40e18);
+        (, uint256 units, uint256 unconverted, uint256 converted, uint256 held) = queues.depositQueue();
+        assertEq(units, 0);
+        assertEq(unconverted, 0);
+        assertEq(converted, 0);
+        assertEq(held, 0);
 
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-shares");
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/nothing-pending");
         queues.cancelDeposit(alice, alice);
+    }
+
+    function testCancelHeld() public {
+        _queueDeposit(alice, 100e18);
+        vm.prank(alice); assertEq(queues.cancelDeposit(alice, alice), 100e18);
+        (,,,, uint256 held) = queues.depositQueue();
+        assertEq(held, 0);
+        assertEq(susds.balanceOf(alice), 100e18);
     }
 
     function testCancelRedeem() public {
@@ -527,7 +625,7 @@ contract SrUsdsQueuesTest is DssTest {
     }
 
     function testCancelReverts() public {
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-shares");
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/nothing-pending");
         queues.cancelDeposit(alice, alice);
 
         _queueDeposit(alice, 100e18);
@@ -548,6 +646,7 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.claimDeposit(10e18, bob, alice), 10e18);
         assertEq(srusds.balanceOf(bob), 10e18);
         assertEq(queues.claimableDeposit(alice), 30e18);
+        assertEq(queues.pendingDeposit(alice), 60e18);
 
         vm.expectRevert("SrUsdsQueues/insufficient-claimable");
         queues.claimDeposit(30e18 + 1, alice, alice);
@@ -557,9 +656,51 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.claimDeposit(type(uint256).max, alice, alice), 0); // Nothing to claim is fine
         vm.stopPrank();
 
-        (,, uint256 rewardDebt, uint256 claimable) = _depositPosition(alice);
+        (uint256 units, uint256 cycle, uint256 claimable) = _depositPosition(alice);
+        assertEq(units, 60e18); // Pending, held again for the next settlement
+        assertEq(cycle, 1);
         assertEq(claimable, 0);
-        assertEq(rewardDebt, 0.4e27);
+    }
+
+    /// A claim takes the position out of the pool and queues its pending part again: it is converted at the
+    /// next settlement just the same, and the position no longer shares what it had converted with anyone
+    function testClaimRequeuesPending() public {
+        _queueDeposit(alice, 100e18);
+        _settleDeposit(40e18);
+        vm.prank(alice); queues.claimDeposit(type(uint256).max, alice, alice);
+
+        (, uint256 units, uint256 unconverted, uint256 converted, uint256 held) = queues.depositQueue();
+        assertEq(units, 0);
+        assertEq(unconverted, 0);
+        assertEq(converted, 0);
+        assertEq(held, 60e18);
+
+        assertEq(_settleDeposit(type(uint256).max), 60e18);
+        assertEq(queues.claimableDeposit(alice), 60e18);
+        assertEq(queues.pendingDeposit(alice), 0);
+    }
+
+    /// Claims are open while locked: they move pending from the pool to the held balance, so what is still
+    /// to convert does not change under the facilitator's plan
+    function testClaimWhileLockedKeepsTotals() public {
+        _queueDeposit(alice, 100e18);
+        _queueDeposit(bob, 100e18);
+        _settleDeposit(50e18);
+        vm.warp(_nextDay() + 14 hours);
+        assertTrue(queues.locked());
+
+        uint256 before = _depositPending();
+        vm.prank(alice); assertEq(queues.claimDeposit(type(uint256).max, alice, alice), 25e18);
+        assertEq(_depositPending(), before);
+        (, uint256 units, uint256 unconverted, uint256 converted, uint256 held) = queues.depositQueue();
+        assertEq(units, 100e18);
+        assertEq(unconverted, 75e18);
+        assertEq(converted, 25e18);
+        assertEq(held, 75e18);
+
+        queues.settle(0, 150e18, 0);
+        assertEq(queues.claimableDeposit(alice), 75e18);
+        assertEq(queues.claimableDeposit(bob), 100e18);
     }
 
     function testClaimRedeem() public {
@@ -572,6 +713,10 @@ contract SrUsdsQueuesTest is DssTest {
         emit ClaimRedeem(alice, alice, alice, 25e18);
         assertEq(queues.claimRedeem(type(uint256).max, alice, alice), 25e18);
         assertEq(susds.balanceOf(alice), 25e18);
+        (uint256 units, uint256 cycle, uint256 claimable) = _redeemPosition(alice);
+        assertEq(units, 75e18);
+        assertEq(cycle, 1);
+        assertEq(claimable, 0);
     }
 
     function testClaimReverts() public {
@@ -583,132 +728,39 @@ contract SrUsdsQueuesTest is DssTest {
         queues.claimDeposit(1, bob, alice);
     }
 
-    /// Converted amounts are credited lazily: they accrue across settlements and a claim collects all of them
+    /// Converted amounts accrue in the pool across settlements and a claim collects all of them
     function testClaimAccruesAcrossSettlements() public {
         _queueDeposit(alice, 100e18);
         _settleDeposit(25e18);
         _settleDeposit(25e18);
         assertEq(queues.claimableDeposit(alice), 50e18);
-        (,,, uint256 stored) = _depositPosition(alice);
-        assertEq(stored, 0); // Nothing banked until the position is touched
+        (,, uint256 stored) = _depositPosition(alice);
+        assertEq(stored, 0); // Nothing set aside until the position is touched
 
         _queueDeposit(alice, 10e18);
-        (,,, stored) = _depositPosition(alice);
+        (,, stored) = _depositPosition(alice);
         assertEq(stored, 50e18);
         _settleDeposit(30e18);
         assertEq(queues.claimableDeposit(alice), 80e18);
         vm.prank(alice); assertEq(queues.claimDeposit(type(uint256).max, alice, alice), 80e18);
     }
 
-    // --- Share ratio limit ---
-    // Within a generation the shares:underlying ratio only grows: a conversion removes underlying but keeps
-    // every share, and joins keep the ratio as it is. To keep the accounting precise, a partial conversion must
-    // leave at least totalShares / MAX_SHARE_RATIO of underlying behind, so a generation ends only when drained.
+    // --- Precision ---
 
-    /// A conversion that would leave less than the minimum remainder is reduced to leave exactly that, or to
-    /// nothing once the queue is at the limit; a drain is always allowed and ends the generation
-    function testPartialConversionLeavesMinRemainder() public {
+    /// Partial fills never degrade the accounting: the pool keeps what it converts, so units never outgrow
+    /// what they are worth and a request can be filled in as many steps as it takes
+    function testManyPartialFillsStayExact() public {
         _queueDeposit(alice, 1_000_000e18);
-        uint256 minRemainder = 1_000_000e18 / MAX_SHARE_RATIO; // 1e15
+        _queueDeposit(bob, 1);
+        for (uint256 i; i < 90; i++) _settleFraction(50_00); // Down to the last wei, which a half fill leaves
+        assertEq(_depositPending(), 1);
+        assertEq(queues.claimableDeposit(alice), 1_000_000e18 - 1); // Both round down against the last wei
+        assertEq(queues.claimableDeposit(bob), 0);
 
-        assertEq(_settleDeposit(1_000_000e18 - 1), 1_000_000e18 - minRemainder);
-        (uint256 gen,, uint256 underlying) = queues.depositQueue();
-        assertEq(gen, 0);
-        assertEq(underlying, minRemainder);
-        assertEq(_depositRatio(), MAX_SHARE_RATIO);
-        assertEq(queues.pendingDeposit(alice), minRemainder);
-        assertEq(queues.claimableDeposit(alice), 1_000_000e18 - minRemainder);
-
-        assertEq(_settleDeposit(minRemainder - 1), 0);                // At the limit a partial conversion converts nothing
-        assertEq(_settleDeposit(type(uint256).max), minRemainder);   // Only a drain makes progress
-        assertEq(_depositGen(), 1);
-        assertEq(queues.pendingDeposit(alice), 0);
+        assertEq(_settleDeposit(type(uint256).max), 1);
         assertEq(queues.claimableDeposit(alice), 1_000_000e18);
-    }
-
-    /// Each 50% fill doubles the ratio, so the 30th reaches the limit; from then on half fills convert nothing
-    /// and the generation can only be converted in full
-    function testHalfFillsFreezeAfterThirty() public {
-        _queueDeposit(alice, 1_000_000e18);
-
-        for (uint256 i; i < 30; i++) {
-            assertGt(_settleFraction(50_00), 0);
-            assertLe(_depositRatio(), MAX_SHARE_RATIO);
-        }
-        assertEq(_depositRatio(), MAX_SHARE_RATIO);
-        assertEq(_depositGen(), 0);
-
-        assertEq(_settleFraction(50_00), 0);
-        assertEq(_settleFraction(99_99), 0);
-        assertEq(_settleDeposit(type(uint256).max), 1_000_000e18 / MAX_SHARE_RATIO);
-        assertEq(_depositGen(), 1);
-        assertEq(queues.claimableDeposit(alice), 1_000_000e18);
-    }
-
-    /// A wei queued next to a large request cannot poison the generation: the fill that would leave only that
-    /// wei is reduced to leave the minimum remainder, so a later joiner gets a sane number of shares and every
-    /// later conversion is still credited to the wei
-    function testSliverCannotPoisonGeneration() public {
-        _queueDeposit(alice, 1_000_000e18);
-        _queueDeposit(carol, 1);
-        uint256 minRemainder = (1_000_000e18 + 1) / MAX_SHARE_RATIO;
-        assertEq(_settleDeposit(1_000_000e18), 1_000_000e18 + 1 - minRemainder);
-
-        _queueDeposit(bob, 100e18);
-        (, uint256 bobShares,,) = _depositPosition(bob);
-        assertEq(bobShares, 100e18 * (1_000_000e18 + 1) / minRemainder); // About 1e9 shares per wei
-        _settleDeposit(type(uint256).max);
-        assertEq(_depositGen(), 1);
-        // Rewards are credited rounded down by under totalShares / RAY per conversion: 100 wei here
-        assertApproxEqAbs(queues.claimableDeposit(bob), 100e18, 100);
-        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 100);
-        assertLe(srusds.balanceOf(address(queues)) - queues.claimableDeposit(alice) - queues.claimableDeposit(bob) - queues.claimableDeposit(carol), 200);
-    }
-
-    /// Once its generation is drained a request has nothing pending: cancel reverts and pending shows 0, while
-    /// what converted stays claimable. A new request starts a position in the current generation, keeping it
-    function testDrainedGeneration() public {
-        _queueDeposit(alice, 100e18);
-        _settleDeposit(type(uint256).max);
-        assertEq(_depositGen(), 1);
+        assertEq(queues.claimableDeposit(bob), 1);
         assertEq(queues.pendingDeposit(alice), 0);
-        assertEq(queues.claimableDeposit(alice), 100e18);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/not-current-gen");
-        queues.cancelDeposit(alice, alice);
-
-        _queueDeposit(bob, 100e18); // The new generation starts at 1:1
-        _queueDeposit(alice, 50e18);
-        (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) = _depositPosition(alice);
-        assertEq(gen, 1);
-        assertEq(shares, 50e18);
-        assertEq(rewardDebt, 0);
-        assertEq(claimable, 100e18);
-        assertEq(queues.pendingDeposit(alice), 50e18);
-        assertEq(queues.claimableDeposit(alice), 100e18);
-
-        _settleDeposit(75e18);
-        assertEq(queues.claimableDeposit(alice), 125e18);
-        assertEq(queues.claimableDeposit(bob), 50e18);
-        vm.prank(alice); assertEq(queues.cancelDeposit(alice, alice), 25e18);
-    }
-
-    /// The redeem queue follows the same rules
-    function testRedeemQueueMinRemainder() public {
-        uint256 shares = _mintSrUsds(alice, 1_000_000e18);
-        _queueRedeem(alice, shares);
-        uint256 minRemainder = shares / MAX_SHARE_RATIO;
-
-        _settle(0, 0, shares - 1);
-        assertEq(queues.pendingRedeem(alice), minRemainder);
-        assertEq(queues.claimableRedeem(alice), shares - minRemainder);
-
-        _settle(0, 0, type(uint256).max);
-        (uint256 gen,,) = queues.redeemQueue();
-        assertEq(gen, 1);
-        assertEq(queues.pendingRedeem(alice), 0);
-        assertEq(queues.claimableRedeem(alice), 1_000_000e18);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/not-current-gen");
-        queues.cancelRedeem(alice, alice);
     }
 
     function testFuzzSettle(uint256 depositAmt, uint256 capacity) public {
@@ -717,25 +769,13 @@ contract SrUsdsQueuesTest is DssTest {
         _queueDeposit(alice, depositAmt);
 
         uint256 converted = _settleDeposit(capacity);
-
-        if (capacity >= depositAmt) {
-            assertEq(converted, depositAmt);
-            assertEq(_depositGen(), 1);
-            assertEq(queues.pendingDeposit(alice), 0);
-            assertEq(queues.claimableDeposit(alice), depositAmt);
-        } else {
-            // The remainder is floored at totalShares / MAX_SHARE_RATIO (shares == depositAmt here)
-            uint256 minRemainder = depositAmt / MAX_SHARE_RATIO;
-            uint256 expected = depositAmt - capacity < minRemainder ? depositAmt - minRemainder : capacity;
-            assertEq(converted, expected);
-            assertEq(_depositGen(), 0);
-            assertEq(queues.pendingDeposit(alice), depositAmt - expected);
-            assertApproxEqAbs(queues.claimableDeposit(alice), expected, 1); // Reward per share and its credit both round down
-        }
+        assertEq(converted, capacity < depositAmt ? capacity : depositAmt);
+        assertEq(queues.pendingDeposit(alice), depositAmt - converted);
+        assertEq(queues.claimableDeposit(alice), converted);
     }
 
     /// However joins, fills, drains, cancels and claims interleave, every user ends up with what they put in
-    /// (as srUSDS at 1:1 plus returned sUSDS), and the contract keeps only rounding dust
+    /// (as srUSDS at 1:1 plus returned sUSDS) up to rounding dust, which stays in the pool for whoever is next
     function testFuzzEveryoneIsMadeWhole(uint256 seed) public {
         address[3] memory users = [alice, bob, carol];
         uint256[3] memory put;
@@ -745,17 +785,16 @@ contract SrUsdsQueuesTest is DssTest {
             uint256 r = uint256(keccak256(abi.encode(seed, i)));
             uint256 u = r % 3;
             if (r >> 8 & 3 == 0) {
-                uint256 amt = bound(r >> 16, 1e18, 1_000e18);
+                uint256 amt = bound(r >> 16, 1, 1_000e18);
                 _queueDeposit(users[u], amt);
                 put[u] += amt;
             }
-            if (r >> 64 & 7 == 0 && queues.pendingDeposit(users[u]) > 0) { // Pending is 0 in a drained generation
+            if (r >> 64 & 7 == 0 && queues.pendingDeposit(users[u]) > 0) {
                 vm.prank(users[u]); got[u] += queues.cancelDeposit(users[u], users[u]);
             }
             if (r >> 96 & 7 == 0) {
                 vm.prank(users[u]); got[u] += queues.claimDeposit(type(uint256).max, users[u], users[u]);
             }
-            // Fills of any size, clipped by the contract when they would leave too little; now and then a drain
             _settleFraction(r >> 104 & 15 == 0 ? 10_000 : bound(r >> 128, 0, 99_99));
         }
 
@@ -763,12 +802,10 @@ contract SrUsdsQueuesTest is DssTest {
         for (uint256 u; u < 3; u++) {
             assertEq(queues.pendingDeposit(users[u]), 0);
             vm.prank(users[u]); got[u] += queues.claimDeposit(type(uint256).max, users[u], users[u]);
-            // Shares are minted rounded down, so a join shifts up to a wei to existing holders; every other
-            // rounding is in the contract's favour, the largest being up to totalShares / RAY per conversion
-            // (shares minted at a ratio up to 1e9 make that up to 1e-18 of what was joined)
-            assertApproxEqAbs(got[u], put[u], 1e6);
+            // Each exit rounds its share of both balances down by under a wei, and the dust goes to the pool
+            assertApproxEqAbs(got[u], put[u], 2 * 120);
         }
-        assertLe(susds.balanceOf(address(queues)), 1e6);
-        assertLe(srusds.balanceOf(address(queues)), 1e6);
+        assertLe(susds.balanceOf(address(queues)), 2 * 120);
+        assertLe(srusds.balanceOf(address(queues)), 2 * 120);
     }
 }

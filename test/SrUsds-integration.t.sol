@@ -104,6 +104,7 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
 
     function setUp() public {
         vm.createSelectFork(vm.envString("ETH_RPC_URL"));
+        vm.warp((block.timestamp / 1 days + 1) * 1 days + 10 hours); // Outside the settlement window, whatever the time of day
         validate = vm.envOr("VALIDATE", false);
 
         LOG = ChainlogAbstract(0xdA0Ab1e0017DEbCd72Be8599041a2aa3bA7e740F);

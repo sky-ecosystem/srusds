@@ -33,13 +33,14 @@ Roles follow ERC-7540: `owner` provides the tokens of a request, `controller` ow
 
 ### `cancelDeposit(receiver, controller)` / `cancelRedeem(receiver, controller)`
 
-- Returns the `controller`'s whole **pending** sUSDS (or srUSDS) to `receiver`. Anything already converted stays claimable.
+- Returns the `controller`'s whole **pending** sUSDS (or srUSDS) to `receiver`. Anything already converted is set aside and stays claimable.
 - `msg.sender` must be `controller` or its operator.
-- Reverts once the request's generation has been fully converted, since nothing is pending then.
+- Reverts when nothing is pending.
 
 ### `claimDeposit(shares, receiver, controller)` / `claimRedeem(assets, receiver, controller)`
 
 - Sends converted srUSDS (or sUSDS) to `receiver`. `type(uint256).max` claims everything.
+- Sets aside everything the position has converted, claimed or not, and queues its pending part again (see [Fairness at Claim Time](#fairness-at-claim-time)).
 - `msg.sender` must be `controller` or its operator.
 
 ### `setOperator(operator, approved)`
@@ -93,23 +94,26 @@ The Beam bounds each settlement: `profit ≤ maxMint` for gains, `-profit ≤ ma
 - Conversions: `convertToAssets(shares) = shares * chi / RAY`, `convertToShares(assets) = assets * RAY / chi`, and `totalAssets() = totalSupply * chi / RAY`.
 - `chi` only changes at settlement. Between settlements srUSDS grows in USDS terms through its sUSDS backing, and only changes in sUSDS terms through the facilitator's reported gains or losses.
 
-### Queues and Generations
+### Queues
 
-Each queue pools all requests into a **generation** that shares every conversion pro rata:
+Each queue is a single **pool** that shares every conversion pro rata:
 
-- A request adds the underlying (sUSDS or srUSDS) to the queue and gives the position internal queue shares in proportion to it.
-- Each settlement converts part or all of the queue. Every position in the generation gets the same fraction: its share of what was converted becomes **claimable**, and the rest stays **pending**.
-- Converted amounts are tracked with a per-generation accumulator (`rewardPerToken`) and credited lazily, so a settlement does constant work regardless of how many positions there are.
-- When a conversion takes everything that is queued, the generation ends. New requests start the next one; positions in an ended generation keep their claimable balance.
-- There is no time priority within a generation: a request that joins later shares the next conversions equally with those that were already waiting, and never receives anything converted before it joined.
+- A request adds the underlying (sUSDS or srUSDS) to the queue and gives the position one unit per unit of underlying. Requests made since the last settlement are **held**: they join the pool at the next settlement, so they take no part in what was converted before.
+- Each settlement lets the held requests in, then converts part or all of the pool's unconverted underlying. What it receives stays in the pool, so a unit is a pro rata claim on both the pool's **unconverted** underlying and its **converted** reward, and every position gets the same fraction of every conversion.
+- There is no per-position accumulator: a settlement does constant work regardless of how many positions there are, and nothing limits how many partial conversions a request can go through.
+- There is no time priority: a request that joins later shares the next conversions equally with those that were already waiting.
 
-**Example.** Alice queues 100 sUSDS and Bob 300. A settlement converts 200, half of the queue: Alice can claim 50 srUSDS with 50 still pending, and Bob 150 with 150 pending. Carol then queues 100. The next settlement converts 150 of the 300 pending, again half: Alice gets 25, Bob 75 and Carol 50.
+**Example.** Alice queues 100 sUSDS and Bob 300. A settlement converts 200, half of the queue: Alice can claim 50 srUSDS with 50 still pending, and Bob 150 with 150 pending. Both claim. Carol then queues 100. The next settlement converts 150 of the 300 pending, again half: Alice gets 25, Bob 75 and Carol 50.
 
-### Share Ratio Limit
+### Fairness at Claim Time
 
-- A partial conversion removes underlying from the queue but keeps all its internal shares, so the shares per unit of underlying grow with each partial conversion within a generation.
-- To keep the accounting precise, a partial conversion must leave at least `totalShares / MAX_SHARE_RATIO` (1e9) of underlying behind. A conversion that would leave less is reduced, possibly to zero.
-- A generation that is never fully converted therefore reaches the limit eventually (for example, after about 30 conversions of half the queue). From then on it can only be converted in full.
+What a position has converted is only its own once its controller has acted on it. Any action by the controller (claim, cancel or a new request) takes the position out of the pool with its share of both balances: the converted part is **set aside** as the position's claimable balance, which nothing can change anymore, and the pending part is held again for the next settlement, which converts it just the same. A claim claims from the amount set aside.
+
+A position left in the pool over a settlement shares what it had converted with the requests that join then, and gets a larger share of the pending side in exchange. Nobody's value changes, but the slow claimer ends up with less converted and more pending than it had, and in the redeem queue the converted part, which was out of srUSDS, is exposed again to its gains and losses.
+
+**Example.** Alice queues 100 srUSDS and a settlement converts 90: she can claim 90 sUSDS with 10 srUSDS pending. She does not claim. Bob queues 100 srUSDS and the next settlement converts 10 more. The pool now holds 100 sUSDS and 100 srUSDS for 200 units: Alice and Bob can each claim 50 sUSDS, with 50 srUSDS each pending. Had Alice claimed (or done anything with her request) before that settlement, her 90 sUSDS would have been set aside and only the 10 would have been shared with Bob.
+
+So claim within the cycle. Integrators should read `claimableDeposit` / `claimableRedeem` at claim time rather than cache them, and claim with `type(uint256).max`, as a settlement can lower them and raise `pendingDeposit` / `pendingRedeem` without any action of the controller.
 
 ### Emergency Halt (`SrUsdsMom`)
 

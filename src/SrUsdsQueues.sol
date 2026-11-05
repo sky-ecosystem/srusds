@@ -47,7 +47,9 @@ interface ShareLike is TokenLike {
 ///      the tokens on cancel or claim. An operator approved through setOperator can act as owner or controller.
 ///
 ///      Both queues implement the generation-based model where all requests in the same generation share
-///      proportionally in the conversion capacity allocated to that generation.
+///      proportionally in the conversion capacity allocated to that generation. A generation whose internal
+///      shares have grown past MAX_SHARE_RATIO per unit of underlying, through partial conversions, is closed
+///      to new requests until a conversion drains it; cancels and claims keep working while it is closed.
 contract SrUsdsQueues is UUPSUpgradeable {
 
     // --- Structs ---
@@ -91,8 +93,8 @@ contract SrUsdsQueues is UUPSUpgradeable {
     // --- Constants ---
 
     uint256 constant RAY = 10 ** 27;
-    // Largest totalShares:totalUnderlying a generation may carry. Conversion is the only thing
-    // that raises it, so bounding the remainder a conversion may leave bounds the ratio itself.
+    // Largest totalShares:totalUnderlying a generation accepts requests at. Conversion is the only thing
+    // that raises it; past the limit the generation is closed to new requests until it is drained.
     uint256 constant MAX_SHARE_RATIO = 10 ** 9;
 
     // --- Events ---
@@ -189,24 +191,18 @@ contract SrUsdsQueues is UUPSUpgradeable {
             && lastSettleDay < day;                 // Today has not been settled yet
     }
 
+    /// @dev Past the limit a joiner would get too many shares per unit of underlying for the accounting to stay
+    ///      precise, so the generation is closed to new requests until a conversion drains it
+    function _closed(Queue storage queue) internal view returns (bool) {
+        return queue.totalShares > queue.totalUnderlying * MAX_SHARE_RATIO;
+    }
+
     /// @dev Convert up to capacity of a queue's underlying into its reward through the share token:
     ///      asset into shares for the deposit queue, shares into asset for the redeem queue
     function _convert(Queue storage queue, TokenLike underlying, uint256 capacity) internal returns (uint256 converted, uint256 received) {
         uint256 totalUnderlying = queue.totalUnderlying;
-        uint256 totalShares = queue.totalShares;
 
         converted = capacity < totalUnderlying ? capacity : totalUnderlying;
-
-        // A conversion removes underlying but keeps all shares, so the shares per unit of underlying go up.
-        // With only a tiny remainder left, the next joiner would get a huge number of shares and every later
-        // reward per share would round down to zero. So either drain the generation completely or leave at
-        // least totalShares / MAX_SHARE_RATIO behind.
-        if (converted < totalUnderlying) {
-            uint256 minRemainder = totalShares / MAX_SHARE_RATIO;
-            if (totalUnderlying - converted < minRemainder) {
-                converted = totalUnderlying > minRemainder ? totalUnderlying - minRemainder : 0;
-            }
-        }
 
         // Nothing to convert (empty queue or no capacity); also avoids dividing by totalShares == 0 below
         if (converted == 0) return (0, 0);
@@ -215,8 +211,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
                    ? share.deposit(converted, address(this))
                    : share.redeem(converted, address(this), address(this));
 
-        // Update reward accumulator
-        queue.rewardPerToken[queue.currentGen] += received * RAY / totalShares;
+        // Update reward accumulator. A partial conversion removes underlying but keeps every share, so the
+        // shares per unit of underlying go up. Whatever remainder it leaves, requests are blocked past
+        // MAX_SHARE_RATIO (see _queue), so shares are never minted at a ratio the accounting cannot handle
+        queue.rewardPerToken[queue.currentGen] += received * RAY / queue.totalShares;
 
         // Reduce underlying
         totalUnderlying -= converted;
@@ -263,6 +261,7 @@ contract SrUsdsQueues is UUPSUpgradeable {
         require(controller != address(0), "SrUsdsQueues/controller-zero-address");
         require(amount > 0, "SrUsdsQueues/zero-amount");
         require(!_locked(), "SrUsdsQueues/queue-locked");
+        require(!_closed(queue), "SrUsdsQueues/queue-closed");
 
         Position storage pos = queue.positions[controller];
 
@@ -385,6 +384,16 @@ contract SrUsdsQueues is UUPSUpgradeable {
     /// @notice Whether requests and cancellations are currently closed: on a settlement day, inside its window and not yet settled
     function locked() external view returns (bool) {
         return _locked();
+    }
+
+    /// @notice Whether the deposit queue is closed to new requests: its generation is past the share ratio limit and reopens once drained
+    function isQueueDepositClosed() external view returns (bool) {
+        return _closed(depositQueue);
+    }
+
+    /// @notice Whether the redeem queue is closed to new requests: its generation is past the share ratio limit and reopens once drained
+    function isQueueRedeemClosed() external view returns (bool) {
+        return _closed(redeemQueue);
     }
 
     /// @notice Assets still waiting to be converted to shares

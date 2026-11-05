@@ -107,9 +107,10 @@ Each queue pools all requests into a **generation** that shares every conversion
 
 ### Share Ratio Limit
 
-- A partial conversion removes underlying from the queue but keeps all its internal shares, so the shares per unit of underlying grow with each partial conversion within a generation.
-- To keep the accounting precise, a partial conversion must leave at least `totalShares / MAX_SHARE_RATIO` (1e9) of underlying behind. A conversion that would leave less is reduced, possibly to zero.
-- A generation that is never fully converted therefore reaches the limit eventually (for example, after about 30 conversions of half the queue). From then on it can only be converted in full.
+- A partial conversion removes underlying from the queue but keeps all its internal shares, so the shares per unit of underlying grow with each partial conversion within a generation. A conversion always uses its full capacity, whatever it leaves behind.
+- The ratio is a problem once it gets extreme. A request joining at a ratio of `r` is given `r` shares per unit of underlying, and each conversion is credited as a reward per share rounded down to 27 decimals, so a position loses up to `r * 1e-9` wei per token on every conversion. At a ratio of 1e9 that is a wei. With no limit, a conversion that leaves a single wei behind would push the ratio to 1e20 or more, where each conversion loses up to 1e11 wei per token joined (hundreds of tokens on a large queue) and the products in requests and cancels get within a few orders of magnitude of overflowing.
+- So requests are accepted only while the ratio is at most `MAX_SHARE_RATIO` (1e9). Past it the generation is **closed**: `queueDeposit` or `queueRedeem` reverts with `queue-closed` until a conversion drains the generation and the next one starts at 1:1. Cancels and claims keep working while it is closed. `isQueueDepositClosed()` and `isQueueRedeemClosed()` report the state.
+- The limit is passed by a partial conversion that leaves less than a billionth of the queue behind, or after about 30 conversions of half the queue. A closed queue reopens as soon as the remainder is converted, normally at the next settlement.
 
 ### Emergency Halt (`SrUsdsMom`)
 
@@ -192,6 +193,7 @@ Each queue pools all requests into a **generation** that shares every conversion
 - **Trust in the facilitator.** Within the Beam's limits, the facilitator decides the reported profit and the capacities.
 - **Queued redeems keep their exposure.** srUSDS waiting in the redeem queue is still part of the supply and takes part in every settlement's gain or loss until it is converted. sUSDS waiting in the deposit queue only earns the Sky Savings Rate.
 - **Pro-rata allocation.** Capacity is shared in proportion to what is queued, with no time priority, so queuing more than needed and cancelling the rest after a settlement gets a larger share. Queue sizes are therefore not a reliable measure of demand.
+- **Closed queues.** A queue closes when a partial conversion leaves less than a billionth of it behind, which with ordinary capacities happens by chance only rarely, but can be arranged: a request sized so that the queue exceeds the capacity by a sliver closes the queue to everyone else until the remainder is drained, normally one settlement. Repeating this with a large request pending when the limit is passed keeps the queue closed, and the capacity to the pending requests, until they drain; new requests revert meanwhile instead of waiting. A sliver is visible on-chain before the settlement, so the facilitator can avoid leaving it by choosing the capacity, and if a queue does get held closed, governance can always upgrade `SrUsdsQueues` to end the generation or change the rule.
 - **Severe losses.** At a `chi` of 0, or an extremely small one after a near-total loss, converting deposits reverts, so the settlement has to be made with `depositCapacity = 0`. Redemptions keep working, and queued depositors can cancel.
 - **Halts stop all conversions.** While the Beam is halted, no deposit or redemption is converted.
 - **Not a full ERC-4626 vault.** `SrUsds` exposes ERC-4626 pricing views and the `deposit`/`redeem` used by the queues, but `maxDeposit` and `maxRedeem` are 0 and there is no `mint`, `withdraw` or `preview*`.

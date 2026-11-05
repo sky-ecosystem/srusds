@@ -119,6 +119,21 @@ contract SrUsdsQueuesTest is DssTest {
         (gen,,) = queues.depositQueue();
     }
 
+    function _depositClosed() internal view returns (bool closed) {
+        (, uint256 shares, uint256 underlying) = queues.depositQueue();
+        closed = shares > underlying * MAX_SHARE_RATIO;
+        assertEq(queues.isQueueDepositClosed(), closed);
+    }
+
+    function _queueDepositReverts(address usr, uint256 assets, bytes memory err) internal {
+        susds.mint(usr, assets);
+        vm.startPrank(usr);
+        susds.approve(address(queues), assets);
+        vm.expectRevert(err);
+        queues.queueDeposit(assets, usr, usr, 0);
+        vm.stopPrank();
+    }
+
     function _depositRatio() internal view returns (uint256) {
         (, uint256 shares, uint256 underlying) = queues.depositQueue();
         return underlying == 0 ? 0 : shares / underlying; // Drained: nothing to measure
@@ -602,67 +617,127 @@ contract SrUsdsQueuesTest is DssTest {
 
     // --- Share ratio limit ---
     // Within a generation the shares:underlying ratio only grows: a conversion removes underlying but keeps
-    // every share, and joins keep the ratio as it is. To keep the accounting precise, a partial conversion must
-    // leave at least totalShares / MAX_SHARE_RATIO of underlying behind, so a generation ends only when drained.
+    // every share, and joins keep the ratio as it is. A conversion always uses its full capacity; past
+    // MAX_SHARE_RATIO the generation is closed to new requests until it is drained, so nobody ever joins at
+    // a ratio the accounting cannot handle precisely.
 
-    /// A conversion that would leave less than the minimum remainder is reduced to leave exactly that, or to
-    /// nothing once the queue is at the limit; a drain is always allowed and ends the generation
-    function testPartialConversionLeavesMinRemainder() public {
+    /// A conversion uses its full capacity whatever it leaves behind. Past the limit requests revert while
+    /// cancels and claims keep working; the next drain ends the generation and reopens the queue at 1:1
+    function testPastLimitClosesQueueUntilDrained() public {
         _queueDeposit(alice, 1_000_000e18);
-        uint256 minRemainder = 1_000_000e18 / MAX_SHARE_RATIO; // 1e15
+        _queueDeposit(bob, 100e18);
 
-        assertEq(_settleDeposit(1_000_000e18 - 1), 1_000_000e18 - minRemainder);
+        assertEq(_settleDeposit(1_000_100e18 - 1), 1_000_100e18 - 1); // Everything but a wei
         (uint256 gen,, uint256 underlying) = queues.depositQueue();
         assertEq(gen, 0);
-        assertEq(underlying, minRemainder);
-        assertEq(_depositRatio(), MAX_SHARE_RATIO);
-        assertEq(queues.pendingDeposit(alice), minRemainder);
-        assertEq(queues.claimableDeposit(alice), 1_000_000e18 - minRemainder);
+        assertEq(underlying, 1);
+        assertGt(_depositRatio(), MAX_SHARE_RATIO);
+        assertTrue(_depositClosed());
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 1);
+        assertApproxEqAbs(queues.claimableDeposit(bob), 100e18, 1);
 
-        assertEq(_settleDeposit(minRemainder - 1), 0);                // At the limit a partial conversion converts nothing
-        assertEq(_settleDeposit(type(uint256).max), minRemainder);   // Only a drain makes progress
+        _queueDepositReverts(carol, 100e18, "SrUsdsQueues/queue-closed");
+        _queueDepositReverts(alice, 1, "SrUsdsQueues/queue-closed"); // Also for positions already in the generation
+        vm.prank(bob); assertEq(queues.cancelDeposit(bob, bob), 0);  // Bob's share of the wei rounds to nothing
+        vm.prank(bob); assertApproxEqAbs(queues.claimDeposit(type(uint256).max, bob, bob), 100e18, 1);
+
+        assertEq(_settleDeposit(1_000e18), 1); // The drain
         assertEq(_depositGen(), 1);
-        assertEq(queues.pendingDeposit(alice), 0);
-        assertEq(queues.claimableDeposit(alice), 1_000_000e18);
+        assertFalse(_depositClosed());
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 1);
+        _queueDeposit(carol, 100e18);
+        (, uint256 shares,) = queues.depositQueue();
+        assertEq(shares, 100e18);
     }
 
-    /// Each 50% fill doubles the ratio, so the 30th reaches the limit; from then on half fills convert nothing
-    /// and the generation can only be converted in full
-    function testHalfFillsFreezeAfterThirty() public {
+    /// Each 50% fill doubles the ratio, so the 30th pushes it past the limit and closes the generation;
+    /// later partial fills still convert, and a drain reopens the queue
+    function testHalfFillsCloseAfterThirty() public {
         _queueDeposit(alice, 1_000_000e18);
 
-        for (uint256 i; i < 30; i++) {
+        for (uint256 i; i < 29; i++) {
             assertGt(_settleFraction(50_00), 0);
             assertLe(_depositRatio(), MAX_SHARE_RATIO);
+            _queueDeposit(bob, 1e18); // Still open
         }
-        assertEq(_depositRatio(), MAX_SHARE_RATIO);
+        assertGt(_settleFraction(50_00), 0);
+        assertGt(_depositRatio(), MAX_SHARE_RATIO);
         assertEq(_depositGen(), 0);
+        _queueDepositReverts(bob, 1e18, "SrUsdsQueues/queue-closed");
 
-        assertEq(_settleFraction(50_00), 0);
-        assertEq(_settleFraction(99_99), 0);
-        assertEq(_settleDeposit(type(uint256).max), 1_000_000e18 / MAX_SHARE_RATIO);
+        assertGt(_settleFraction(50_00), 0); // Still converts
+        assertEq(_depositGen(), 0);
+        _queueDepositReverts(bob, 1e18, "SrUsdsQueues/queue-closed");
+
+        assertGt(_settleDeposit(type(uint256).max), 0); // The drain reopens
         assertEq(_depositGen(), 1);
-        assertEq(queues.claimableDeposit(alice), 1_000_000e18);
+        _queueDeposit(bob, 1e18);
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 100);
+        assertApproxEqAbs(queues.claimableDeposit(bob), 29e18, 100);
     }
 
-    /// A wei queued next to a large request cannot poison the generation: the fill that would leave only that
-    /// wei is reduced to leave the minimum remainder, so a later joiner gets a sane number of shares and every
-    /// later conversion is still credited to the wei
-    function testSliverCannotPoisonGeneration() public {
+    /// Exactly at the limit the queue is still open; a single wei converted past it closes it
+    function testLimitBoundary() public {
         _queueDeposit(alice, 1_000_000e18);
-        _queueDeposit(carol, 1);
-        uint256 minRemainder = (1_000_000e18 + 1) / MAX_SHARE_RATIO;
-        assertEq(_settleDeposit(1_000_000e18), 1_000_000e18 + 1 - minRemainder);
-
+        uint256 remainder = 1_000_000e18 / MAX_SHARE_RATIO; // 1e15: exactly at the limit
+        assertEq(_settleDeposit(1_000_000e18 - remainder), 1_000_000e18 - remainder);
+        assertEq(_depositRatio(), MAX_SHARE_RATIO);
         _queueDeposit(bob, 100e18);
         (, uint256 bobShares,,) = _depositPosition(bob);
-        assertEq(bobShares, 100e18 * (1_000_000e18 + 1) / minRemainder); // About 1e9 shares per wei
-        _settleDeposit(type(uint256).max);
+        assertEq(bobShares, 100e18 * MAX_SHARE_RATIO);
+
+        assertEq(_settleDeposit(1), 1);
+        _queueDepositReverts(carol, 100e18, "SrUsdsQueues/queue-closed");
+    }
+
+    /// A wei queued next to a large request closes the queue for one cycle when the fill leaves only that
+    /// wei: nobody joins at a billion shares per wei, the next conversion drains it and a new generation
+    /// starts at 1:1. The wei itself is lost to rounding
+    function testSliverClosesQueueForOneCycle() public {
+        _queueDeposit(alice, 1_000_000e18);
+        _queueDeposit(carol, 1);
+        assertEq(_settleDeposit(1_000_000e18), 1_000_000e18);
+        (,, uint256 underlying) = queues.depositQueue();
+        assertEq(underlying, 1);
+        _queueDepositReverts(bob, 100e18, "SrUsdsQueues/queue-closed");
+
+        assertEq(_settleDeposit(100e18), 1);
         assertEq(_depositGen(), 1);
-        // Rewards are credited rounded down by under totalShares / RAY per conversion: 100 wei here
-        assertApproxEqAbs(queues.claimableDeposit(bob), 100e18, 100);
-        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 100);
-        assertLe(srusds.balanceOf(address(queues)) - queues.claimableDeposit(alice) - queues.claimableDeposit(bob) - queues.claimableDeposit(carol), 200);
+        _queueDeposit(bob, 100e18);
+        (, uint256 bobShares,,) = _depositPosition(bob);
+        assertEq(bobShares, 100e18);
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 1);
+        assertEq(queues.claimableDeposit(carol), 0);
+    }
+
+    /// The limit can be passed on purpose: a request sized so that the queue exceeds the capacity by a sliver
+    /// leaves the ratio just under the limit, and a large request before the next settlement then pushes it
+    /// past it with that request pending. The queue stays closed, and every capacity goes to the requests
+    /// already in it, until they drain
+    function testLargeRequestAtTheLimitKeepsQueueClosed() public {
+        uint256 capacity = 100e18;
+        _queueDeposit(bob, 40e18);
+        _queueDeposit(carol, 40e18);
+        uint256 sliver = 100e18 / (MAX_SHARE_RATIO - 1) + 1; // Smallest remainder that keeps the ratio within the limit
+        _queueDeposit(alice, 20e18 + sliver);
+        assertEq(_settleDeposit(capacity), capacity);
+        assertEq(_depositRatio(), MAX_SHARE_RATIO - 1);
+        assertFalse(_depositClosed());
+
+        _queueDeposit(alice, 10_000e18);
+        for (uint256 i; i < 100; i++) {
+            assertEq(_settleDeposit(capacity), capacity);
+            assertTrue(_depositClosed());
+            _queueDepositReverts(carol, 1e18, "SrUsdsQueues/queue-closed");
+        }
+        assertApproxEqAbs(queues.pendingDeposit(alice), sliver, 1); // Rounds down
+        assertEq(_settleDeposit(capacity), sliver);
+        assertFalse(_depositClosed());
+        assertEq(_depositGen(), 1);
+        // Rewards round down by under totalShares / RAY per conversion, about 1e4 wei at this ratio
+        assertApproxEqAbs(queues.claimableDeposit(alice), 10_020e18 + sliver, 1e6);
+        assertApproxEqAbs(queues.claimableDeposit(bob), 40e18, 1e6);
+        assertApproxEqAbs(queues.claimableDeposit(carol), 40e18, 1e6);
     }
 
     /// Once its generation is drained a request has nothing pending: cancel reverts and pending shows 0, while
@@ -693,22 +768,32 @@ contract SrUsdsQueuesTest is DssTest {
     }
 
     /// The redeem queue follows the same rules
-    function testRedeemQueueMinRemainder() public {
+    function testRedeemQueueClosesPastLimit() public {
         uint256 shares = _mintSrUsds(alice, 1_000_000e18);
         _queueRedeem(alice, shares);
-        uint256 minRemainder = shares / MAX_SHARE_RATIO;
 
+        assertFalse(queues.isQueueRedeemClosed());
         _settle(0, 0, shares - 1);
-        assertEq(queues.pendingRedeem(alice), minRemainder);
-        assertEq(queues.claimableRedeem(alice), shares - minRemainder);
+        assertTrue(queues.isQueueRedeemClosed());
+        assertEq(queues.pendingRedeem(alice), 1);
+        assertApproxEqAbs(queues.claimableRedeem(alice), 1_000_000e18, 1);
+        uint256 bobShares = _mintSrUsds(bob, 100e18);
+        vm.startPrank(bob);
+        srusds.approve(address(queues), bobShares);
+        vm.expectRevert("SrUsdsQueues/queue-closed");
+        queues.queueRedeem(bobShares, bob, bob);
+        vm.stopPrank();
 
         _settle(0, 0, type(uint256).max);
         (uint256 gen,,) = queues.redeemQueue();
         assertEq(gen, 1);
+        assertFalse(queues.isQueueRedeemClosed());
         assertEq(queues.pendingRedeem(alice), 0);
         assertEq(queues.claimableRedeem(alice), 1_000_000e18);
         vm.prank(alice); vm.expectRevert("SrUsdsQueues/not-current-gen");
         queues.cancelRedeem(alice, alice);
+        _queueRedeem(bob, bobShares); // Reopened
+        assertEq(queues.pendingRedeem(bob), bobShares);
     }
 
     function testFuzzSettle(uint256 depositAmt, uint256 capacity) public {
@@ -724,13 +809,17 @@ contract SrUsdsQueuesTest is DssTest {
             assertEq(queues.pendingDeposit(alice), 0);
             assertEq(queues.claimableDeposit(alice), depositAmt);
         } else {
-            // The remainder is floored at totalShares / MAX_SHARE_RATIO (shares == depositAmt here)
-            uint256 minRemainder = depositAmt / MAX_SHARE_RATIO;
-            uint256 expected = depositAmt - capacity < minRemainder ? depositAmt - minRemainder : capacity;
-            assertEq(converted, expected);
+            assertEq(converted, capacity);
             assertEq(_depositGen(), 0);
-            assertEq(queues.pendingDeposit(alice), depositAmt - expected);
-            assertApproxEqAbs(queues.claimableDeposit(alice), expected, 1); // Reward per share and its credit both round down
+            assertEq(queues.pendingDeposit(alice), depositAmt - capacity);
+            assertApproxEqAbs(queues.claimableDeposit(alice), capacity, 1); // Reward per share and its credit both round down
+            // Open while the ratio is within the limit (shares == depositAmt here), closed past it
+            if (depositAmt <= (depositAmt - capacity) * MAX_SHARE_RATIO) {
+                _queueDeposit(bob, 1e18);
+                assertApproxEqAbs(queues.pendingDeposit(bob), 1e18, 2); // Shares minted and pending both round down
+            } else {
+                _queueDepositReverts(bob, 1e18, "SrUsdsQueues/queue-closed");
+            }
         }
     }
 
@@ -744,7 +833,7 @@ contract SrUsdsQueuesTest is DssTest {
         for (uint256 i; i < 120; i++) {
             uint256 r = uint256(keccak256(abi.encode(seed, i)));
             uint256 u = r % 3;
-            if (r >> 8 & 3 == 0) {
+            if (r >> 8 & 3 == 0 && !_depositClosed()) { // Requests revert while the generation is closed
                 uint256 amt = bound(r >> 16, 1e18, 1_000e18);
                 _queueDeposit(users[u], amt);
                 put[u] += amt;
@@ -755,7 +844,7 @@ contract SrUsdsQueuesTest is DssTest {
             if (r >> 96 & 7 == 0) {
                 vm.prank(users[u]); got[u] += queues.claimDeposit(type(uint256).max, users[u], users[u]);
             }
-            // Fills of any size, clipped by the contract when they would leave too little; now and then a drain
+            // Fills of any size, whatever they leave behind; now and then a drain
             _settleFraction(r >> 104 & 15 == 0 ? 10_000 : bound(r >> 128, 0, 99_99));
         }
 

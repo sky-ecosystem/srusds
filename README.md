@@ -19,30 +19,30 @@ The system consists of four contracts:
 
 Roles follow ERC-7540: `owner` provides the tokens of a request, `controller` owns the request, and `receiver` gets the tokens on cancel or claim. Requests and cancellations revert while the queues are locked for settlement; claims work at any time.
 
-### `queueDeposit(assets, controller, owner, referral)`
+#### `queueDeposit(assets, controller, owner, referral)`
 
 - Takes `assets` sUSDS from `owner` into the deposit queue, credited to `controller`.
 - `msg.sender` must be `owner` or its operator, and `owner` must have approved `SrUsdsQueues` for sUSDS.
 - Emits `QueueDeposit` and `Referral` (with the integrator's `referral` code).
 
-### `queueRedeem(shares, controller, owner)`
+#### `queueRedeem(shares, controller, owner)`
 
 - Takes `shares` srUSDS from `owner` into the redeem queue, credited to `controller`.
 - `msg.sender` must be `owner` or its operator, and `owner` must have approved `SrUsdsQueues` for srUSDS.
 - Emits `QueueRedeem`.
 
-### `cancelDeposit(receiver, controller)` / `cancelRedeem(receiver, controller)`
+#### `cancelDeposit(receiver, controller)` / `cancelRedeem(receiver, controller)`
 
 - Returns the `controller`'s whole **pending** sUSDS (or srUSDS) to `receiver`. Anything already converted stays claimable.
 - `msg.sender` must be `controller` or its operator.
 - Reverts once the request's generation has been fully converted, since nothing is pending then.
 
-### `claimDeposit(shares, receiver, controller)` / `claimRedeem(assets, receiver, controller)`
+#### `claimDeposit(shares, receiver, controller)` / `claimRedeem(assets, receiver, controller)`
 
 - Sends converted srUSDS (or sUSDS) to `receiver`. `type(uint256).max` claims everything.
 - `msg.sender` must be `controller` or its operator.
 
-### `setOperator(operator, approved)`
+#### `setOperator(operator, approved)`
 
 - Lets `operator` act as `owner` or `controller` on behalf of `msg.sender`, including choosing any `receiver`.
 

@@ -27,7 +27,7 @@ contract SrUsdsQueuesTest is DssTest {
     address operator = address(0x0b);
     address constant VOW = address(0x5EE);
 
-    uint256 constant MAX_SHARE_RATIO = 10 ** 9;
+    uint256 constant MAX_UNIT_RATIO = 10 ** 9;
 
     event Settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity, uint256 depositsConverted, uint256 depositsReceived, uint256 redeemsConverted, uint256 redeemsReceived);
     event SetOperator(address indexed controller, address indexed operator, bool approved);
@@ -121,7 +121,7 @@ contract SrUsdsQueuesTest is DssTest {
 
     function _depositClosed() internal view returns (bool closed) {
         (, uint256 shares, uint256 underlying) = queues.depositQueue();
-        closed = shares > underlying * MAX_SHARE_RATIO;
+        closed = shares > underlying * MAX_UNIT_RATIO;
         assertEq(queues.isQueueDepositClosed(), closed);
     }
 
@@ -140,21 +140,21 @@ contract SrUsdsQueuesTest is DssTest {
     }
 
     /// @dev A stored position, read straight from storage. depositQueue is at slot 2 and redeemQueue at slot 7;
-    ///      positions is the Queue struct's 5th member (after currentGen, totalShares, totalUnderlying and
-    ///      rewardPerToken), so the mappings live at slots 6 and 11
-    function _position(uint256 slot, address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
+    ///      positions is the Queue struct's 5th member (after gen, totalUnits, pendingUnderlying and
+    ///      convertedPerUnit), so the mappings live at slots 6 and 11
+    function _position(uint256 slot, address usr) internal view returns (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) {
         bytes32 base = keccak256(abi.encode(usr, slot));
         gen        = uint256(vm.load(address(queues), base));
-        shares     = uint256(vm.load(address(queues), bytes32(uint256(base) + 1)));
-        rewardDebt = uint256(vm.load(address(queues), bytes32(uint256(base) + 2)));
+        units      = uint256(vm.load(address(queues), bytes32(uint256(base) + 1)));
+        checkpoint = uint256(vm.load(address(queues), bytes32(uint256(base) + 2)));
         claimable  = uint256(vm.load(address(queues), bytes32(uint256(base) + 3)));
     }
 
-    function _depositPosition(address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
+    function _depositPosition(address usr) internal view returns (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) {
         return _position(6, usr);
     }
 
-    function _redeemPosition(address usr) internal view returns (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) {
+    function _redeemPosition(address usr) internal view returns (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) {
         return _position(11, usr);
     }
 
@@ -315,10 +315,10 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(gen, 0);
         assertEq(shares, 100e18);
         assertEq(underlying, 100e18);
-        (uint256 posGen, uint256 posShares, uint256 rewardDebt, uint256 claimable) = _depositPosition(alice);
+        (uint256 posGen, uint256 posUnits, uint256 checkpoint, uint256 claimable) = _depositPosition(alice);
         assertEq(posGen, 0);
-        assertEq(posShares, 100e18);
-        assertEq(rewardDebt, 0);
+        assertEq(posUnits, 100e18);
+        assertEq(checkpoint, 0);
         assertEq(claimable, 0);
         assertEq(susds.balanceOf(address(queues)), 100e18);
         assertEq(susds.balanceOf(alice), 0);
@@ -335,9 +335,9 @@ contract SrUsdsQueuesTest is DssTest {
         queues.queueRedeem(shares, alice, alice);
         vm.stopPrank();
 
-        (uint256 gen, uint256 queueShares, uint256 underlying) = queues.redeemQueue();
+        (uint256 gen, uint256 units, uint256 underlying) = queues.redeemQueue();
         assertEq(gen, 0);
-        assertEq(queueShares, shares);
+        assertEq(units, shares);
         assertEq(underlying, shares);
         assertEq(srusds.balanceOf(address(queues)), shares);
         assertEq(srusds.balanceOf(alice), 0);
@@ -406,7 +406,7 @@ contract SrUsdsQueuesTest is DssTest {
         queues.claimDeposit(0, alice, alice);
     }
 
-    function testQueueTwiceAddsShares() public {
+    function testQueueTwiceAddsUnits() public {
         _queueDeposit(alice, 100e18);
         _queueDeposit(alice, 50e18);
         (, uint256 shares,,) = _depositPosition(alice);
@@ -414,14 +414,14 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.pendingDeposit(alice), 150e18);
     }
 
-    /// Shares are minted at the generation's current ratio, so a later join gets the same claim per unit
+    /// Units are minted at the generation's current ratio, so a later join gets the same claim per unit
     function testJoinAfterPartialFillIsProRata() public {
         _queueDeposit(alice, 100e18);
         _settleDeposit(50e18);
         _queueDeposit(bob, 50e18);
 
-        (, uint256 bobShares,,) = _depositPosition(bob);
-        assertEq(bobShares, 100e18); // 50 assets * 100 shares / 50 underlying
+        (, uint256 bobUnits,,) = _depositPosition(bob);
+        assertEq(bobUnits, 100e18); // 50 assets * 100 units / 50 underlying
         assertEq(queues.pendingDeposit(alice), 50e18);
         assertEq(queues.pendingDeposit(bob), 50e18);
 
@@ -524,7 +524,7 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(shares, 0);
         assertEq(underlying, 0);
 
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-shares");
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-units");
         queues.cancelDeposit(alice, alice);
     }
 
@@ -542,7 +542,7 @@ contract SrUsdsQueuesTest is DssTest {
     }
 
     function testCancelReverts() public {
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-shares");
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-units");
         queues.cancelDeposit(alice, alice);
 
         _queueDeposit(alice, 100e18);
@@ -572,9 +572,9 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.claimDeposit(type(uint256).max, alice, alice), 0); // Nothing to claim is fine
         vm.stopPrank();
 
-        (,, uint256 rewardDebt, uint256 claimable) = _depositPosition(alice);
+        (,, uint256 checkpoint, uint256 claimable) = _depositPosition(alice);
         assertEq(claimable, 0);
-        assertEq(rewardDebt, 0.4e27);
+        assertEq(checkpoint, 0.4e27);
     }
 
     function testClaimRedeem() public {
@@ -616,9 +616,9 @@ contract SrUsdsQueuesTest is DssTest {
     }
 
     // --- Share ratio limit ---
-    // Within a generation the shares:underlying ratio only grows: a conversion removes underlying but keeps
-    // every share, and joins keep the ratio as it is. A conversion always uses its full capacity; past
-    // MAX_SHARE_RATIO the generation is closed to new requests until it is drained, so nobody ever joins at
+    // Within a generation the units:underlying ratio only grows: a conversion removes underlying but keeps
+    // every unit, and joins keep the ratio as it is. A conversion always uses its full capacity; past
+    // MAX_UNIT_RATIO the generation is closed to new requests until it is drained, so nobody ever joins at
     // a ratio the accounting cannot handle precisely.
 
     /// A conversion uses its full capacity whatever it leaves behind. Past the limit requests revert while
@@ -631,7 +631,7 @@ contract SrUsdsQueuesTest is DssTest {
         (uint256 gen,, uint256 underlying) = queues.depositQueue();
         assertEq(gen, 0);
         assertEq(underlying, 1);
-        assertGt(_depositRatio(), MAX_SHARE_RATIO);
+        assertGt(_depositRatio(), MAX_UNIT_RATIO);
         assertTrue(_depositClosed());
         assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 1);
         assertApproxEqAbs(queues.claimableDeposit(bob), 100e18, 1);
@@ -657,11 +657,11 @@ contract SrUsdsQueuesTest is DssTest {
 
         for (uint256 i; i < 29; i++) {
             assertGt(_settleFraction(50_00), 0);
-            assertLe(_depositRatio(), MAX_SHARE_RATIO);
+            assertLe(_depositRatio(), MAX_UNIT_RATIO);
             _queueDeposit(bob, 1e18); // Still open
         }
         assertGt(_settleFraction(50_00), 0);
-        assertGt(_depositRatio(), MAX_SHARE_RATIO);
+        assertGt(_depositRatio(), MAX_UNIT_RATIO);
         assertEq(_depositGen(), 0);
         _queueDepositReverts(bob, 1e18, "SrUsdsQueues/queue-closed");
 
@@ -679,12 +679,12 @@ contract SrUsdsQueuesTest is DssTest {
     /// Exactly at the limit the queue is still open; a single wei converted past it closes it
     function testLimitBoundary() public {
         _queueDeposit(alice, 1_000_000e18);
-        uint256 remainder = 1_000_000e18 / MAX_SHARE_RATIO; // 1e15: exactly at the limit
+        uint256 remainder = 1_000_000e18 / MAX_UNIT_RATIO; // 1e15: exactly at the limit
         assertEq(_settleDeposit(1_000_000e18 - remainder), 1_000_000e18 - remainder);
-        assertEq(_depositRatio(), MAX_SHARE_RATIO);
+        assertEq(_depositRatio(), MAX_UNIT_RATIO);
         _queueDeposit(bob, 100e18);
-        (, uint256 bobShares,,) = _depositPosition(bob);
-        assertEq(bobShares, 100e18 * MAX_SHARE_RATIO);
+        (, uint256 bobUnits,,) = _depositPosition(bob);
+        assertEq(bobUnits, 100e18 * MAX_UNIT_RATIO);
 
         assertEq(_settleDeposit(1), 1);
         _queueDepositReverts(carol, 100e18, "SrUsdsQueues/queue-closed");
@@ -704,8 +704,8 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(_settleDeposit(100e18), 1);
         assertEq(_depositGen(), 1);
         _queueDeposit(bob, 100e18);
-        (, uint256 bobShares,,) = _depositPosition(bob);
-        assertEq(bobShares, 100e18);
+        (, uint256 bobUnits,,) = _depositPosition(bob);
+        assertEq(bobUnits, 100e18);
         assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 1);
         assertEq(queues.claimableDeposit(carol), 0);
     }
@@ -718,10 +718,10 @@ contract SrUsdsQueuesTest is DssTest {
         uint256 capacity = 100e18;
         _queueDeposit(bob, 40e18);
         _queueDeposit(carol, 40e18);
-        uint256 sliver = 100e18 / (MAX_SHARE_RATIO - 1) + 1; // Smallest remainder that keeps the ratio within the limit
+        uint256 sliver = 100e18 / (MAX_UNIT_RATIO - 1) + 1; // Smallest remainder that keeps the ratio within the limit
         _queueDeposit(alice, 20e18 + sliver);
         assertEq(_settleDeposit(capacity), capacity);
-        assertEq(_depositRatio(), MAX_SHARE_RATIO - 1);
+        assertEq(_depositRatio(), MAX_UNIT_RATIO - 1);
         assertFalse(_depositClosed());
 
         _queueDeposit(alice, 10_000e18);
@@ -734,7 +734,7 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(_settleDeposit(capacity), sliver);
         assertFalse(_depositClosed());
         assertEq(_depositGen(), 1);
-        // Rewards round down by under totalShares / RAY per conversion, about 1e4 wei at this ratio
+        // Credits round down by under totalUnits / RAY per conversion, about 1e4 wei at this ratio
         assertApproxEqAbs(queues.claimableDeposit(alice), 10_020e18 + sliver, 1e6);
         assertApproxEqAbs(queues.claimableDeposit(bob), 40e18, 1e6);
         assertApproxEqAbs(queues.claimableDeposit(carol), 40e18, 1e6);
@@ -753,10 +753,10 @@ contract SrUsdsQueuesTest is DssTest {
 
         _queueDeposit(bob, 100e18); // The new generation starts at 1:1
         _queueDeposit(alice, 50e18);
-        (uint256 gen, uint256 shares, uint256 rewardDebt, uint256 claimable) = _depositPosition(alice);
+        (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) = _depositPosition(alice);
         assertEq(gen, 1);
-        assertEq(shares, 50e18);
-        assertEq(rewardDebt, 0);
+        assertEq(units, 50e18);
+        assertEq(checkpoint, 0);
         assertEq(claimable, 100e18);
         assertEq(queues.pendingDeposit(alice), 50e18);
         assertEq(queues.claimableDeposit(alice), 100e18);
@@ -814,9 +814,9 @@ contract SrUsdsQueuesTest is DssTest {
             assertEq(queues.pendingDeposit(alice), depositAmt - capacity);
             assertApproxEqAbs(queues.claimableDeposit(alice), capacity, 1); // Reward per share and its credit both round down
             // Open while the ratio is within the limit (shares == depositAmt here), closed past it
-            if (depositAmt <= (depositAmt - capacity) * MAX_SHARE_RATIO) {
+            if (depositAmt <= (depositAmt - capacity) * MAX_UNIT_RATIO) {
                 _queueDeposit(bob, 1e18);
-                assertApproxEqAbs(queues.pendingDeposit(bob), 1e18, 2); // Shares minted and pending both round down
+                assertApproxEqAbs(queues.pendingDeposit(bob), 1e18, 2); // Units minted and pending both round down
             } else {
                 _queueDepositReverts(bob, 1e18, "SrUsdsQueues/queue-closed");
             }
@@ -852,8 +852,8 @@ contract SrUsdsQueuesTest is DssTest {
         for (uint256 u; u < 3; u++) {
             assertEq(queues.pendingDeposit(users[u]), 0);
             vm.prank(users[u]); got[u] += queues.claimDeposit(type(uint256).max, users[u], users[u]);
-            // Shares are minted rounded down, so a join shifts up to a wei to existing holders; every other
-            // rounding is in the contract's favour, the largest being up to totalShares / RAY per conversion
+            // Units are minted rounded down, so a join shifts up to a wei to existing holders; every other
+            // rounding is in the contract's favour, the largest being up to totalUnits / RAY per conversion
             // (shares minted at a ratio up to 1e9 make that up to 1e-18 of what was joined)
             assertApproxEqAbs(got[u], put[u], 1e6);
         }

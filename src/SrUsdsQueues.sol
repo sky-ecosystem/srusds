@@ -47,8 +47,8 @@ interface ShareLike is TokenLike {
 ///      the tokens on cancel or claim. An operator approved through setOperator can act as owner or controller.
 ///
 ///      Both queues implement the generation-based model where all requests in the same generation share
-///      proportionally in the conversion capacity allocated to that generation. A generation whose internal
-///      shares have grown past MAX_SHARE_RATIO per unit of underlying, through partial conversions, is closed
+///      proportionally in the conversion capacity allocated to that generation. A generation whose units
+///      have grown past MAX_UNIT_RATIO per unit of underlying, through partial conversions, is closed
 ///      to new requests until a conversion drains it; cancels and claims keep working while it is closed.
 contract SrUsdsQueues is UUPSUpgradeable {
 
@@ -56,16 +56,16 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     struct Position {
         uint256 gen;        // Generation this position belongs to
-        uint256 shares;     // Number of internal queue shares held // TODO: should we rename to units / queueUnits?
-        uint256 rewardDebt; // rewardPerToken snapshot at the last checkpoint [ray]
+        uint256 units;      // Queue units held: one per unit of underlying at the ratio when it joined
+        uint256 checkpoint; // convertedPerUnit at the last checkpoint [ray]
         uint256 claimable;  // Converted and not yet claimed, as of the last checkpoint
     }
 
     struct Queue {
-        uint256 currentGen;
-        uint256 totalShares;
-        uint256 totalUnderlying;
-        mapping(uint256 gen => uint256) rewardPerToken; // Cumulative reward per internal queue share [ray]
+        uint256 gen;
+        uint256 totalUnits;
+        uint256 pendingUnderlying;
+        mapping(uint256 gen => uint256) convertedPerUnit; // Cumulative converted amount per queue unit [ray]
         mapping(address usr => Position) positions;
     }
 
@@ -80,8 +80,8 @@ contract SrUsdsQueues is UUPSUpgradeable {
     uint32  public startDay;         // First settlement day, then every `period` days after it [days since epoch]
     uint32  public lastSettleDay;    // Day of the last settlement [days since epoch]
 
-    Queue public depositQueue;       // Underlying = assets, reward = shares (getter: currentGen, totalShares, totalUnderlying)
-    Queue public redeemQueue;        // Underlying = shares, reward = assets (getter: currentGen, totalShares, totalUnderlying)
+    Queue public depositQueue;       // Underlying = assets, converted = shares (getter: gen, totalUnits, pendingUnderlying)
+    Queue public redeemQueue;        // Underlying = shares, converted = assets (getter: gen, totalUnits, pendingUnderlying)
 
     mapping(address controller => mapping(address operator => bool)) public isOperator;
 
@@ -93,9 +93,9 @@ contract SrUsdsQueues is UUPSUpgradeable {
     // --- Constants ---
 
     uint256 constant RAY = 10 ** 27;
-    // Largest totalShares:totalUnderlying a generation accepts requests at. Conversion is the only thing
+    // Largest totalUnits:pendingUnderlying a generation accepts requests at. Conversion is the only thing
     // that raises it; past the limit the generation is closed to new requests until it is drained.
-    uint256 constant MAX_SHARE_RATIO = 10 ** 9;
+    uint256 constant MAX_UNIT_RATIO = 10 ** 9;
 
     // --- Events ---
 
@@ -191,39 +191,39 @@ contract SrUsdsQueues is UUPSUpgradeable {
             && lastSettleDay < day;                 // Today has not been settled yet
     }
 
-    /// @dev Past the limit a joiner would get too many shares per unit of underlying for the accounting to stay
+    /// @dev Past the limit a joiner would get too many units per unit of underlying for the accounting to stay
     ///      precise, so the generation is closed to new requests until a conversion drains it
     function _closed(Queue storage queue) internal view returns (bool) {
-        return queue.totalShares > queue.totalUnderlying * MAX_SHARE_RATIO;
+        return queue.totalUnits > queue.pendingUnderlying * MAX_UNIT_RATIO;
     }
 
     /// @dev Convert up to capacity of a queue's underlying into its reward through the share token:
     ///      asset into shares for the deposit queue, shares into asset for the redeem queue
     function _convert(Queue storage queue, TokenLike underlying, uint256 capacity) internal returns (uint256 converted, uint256 received) {
-        uint256 totalUnderlying = queue.totalUnderlying;
+        uint256 pendingUnderlying = queue.pendingUnderlying;
 
-        converted = capacity < totalUnderlying ? capacity : totalUnderlying;
+        converted = capacity < pendingUnderlying ? capacity : pendingUnderlying;
 
-        // Nothing to convert (empty queue or no capacity); also avoids dividing by totalShares == 0 below
+        // Nothing to convert (empty queue or no capacity); also avoids dividing by totalUnits == 0 below
         if (converted == 0) return (0, 0);
 
         received = underlying == asset
                    ? share.deposit(converted, address(this))
                    : share.redeem(converted, address(this), address(this));
 
-        // Update reward accumulator. A partial conversion removes underlying but keeps every share, so the
-        // shares per unit of underlying go up. Whatever remainder it leaves, requests are blocked past
-        // MAX_SHARE_RATIO (see _queue), so shares are never minted at a ratio the accounting cannot handle
-        queue.rewardPerToken[queue.currentGen] += received * RAY / queue.totalShares;
+        // Update the accumulator. A partial conversion removes underlying but keeps every unit, so the
+        // units per unit of underlying go up. Whatever remainder it leaves, requests are blocked past
+        // MAX_UNIT_RATIO (see _queue), so units are never minted at a ratio the accounting cannot handle
+        queue.convertedPerUnit[queue.gen] += received * RAY / queue.totalUnits;
 
         // Reduce underlying
-        totalUnderlying -= converted;
-        queue.totalUnderlying = totalUnderlying;
+        pendingUnderlying -= converted;
+        queue.pendingUnderlying = pendingUnderlying;
 
         // If generation fully drained, finalize and advance
-        if (totalUnderlying == 0) {
-            queue.currentGen++;
-            queue.totalShares = 0;
+        if (pendingUnderlying == 0) {
+            queue.gen++;
+            queue.totalUnits = 0;
         }
     }
 
@@ -246,9 +246,9 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     /// @dev Move what has converted since the last checkpoint into the stored claimable balance, without paying it out
     function _checkpoint(Queue storage queue, Position storage pos) internal {
-        uint256 rpt = queue.rewardPerToken[pos.gen];
-        pos.claimable += pos.shares * (rpt - pos.rewardDebt) / RAY;
-        pos.rewardDebt = rpt;
+        uint256 cpu = queue.convertedPerUnit[pos.gen];
+        pos.claimable += pos.units * (cpu - pos.checkpoint) / RAY;
+        pos.checkpoint = cpu;
     }
 
     /// @dev msg.sender must be `usr` or an operator approved by `usr`
@@ -267,23 +267,23 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
         _checkpoint(queue, pos);
 
-        // Calculate internal queue shares to mint
-        uint256 queueShares = queue.totalShares == 0
-                              ? amount
-                              : amount * queue.totalShares / queue.totalUnderlying;
-        require(queueShares > 0, "SrUsdsQueues/zero-shares");
+        // Calculate the queue units to mint
+        uint256 units = queue.totalUnits == 0
+                        ? amount
+                        : amount * queue.totalUnits / queue.pendingUnderlying;
+        require(units > 0, "SrUsdsQueues/zero-units");
 
         // Update state
-        uint256 gen = queue.currentGen;
-        queue.totalUnderlying += amount;
-        queue.totalShares += queueShares;
+        uint256 gen = queue.gen;
+        queue.pendingUnderlying += amount;
+        queue.totalUnits += units;
         if (pos.gen < gen) {
             // Start a new position in the current generation; the old one's claimable balance is kept
             pos.gen = gen;
-            pos.shares = queueShares;
-            pos.rewardDebt = queue.rewardPerToken[gen];
+            pos.units = units;
+            pos.checkpoint = queue.convertedPerUnit[gen];
         } else {
-            pos.shares += queueShares;
+            pos.units += units;
         }
 
         // Escrow the queued amount from the owner
@@ -295,25 +295,25 @@ contract SrUsdsQueues is UUPSUpgradeable {
         require(receiver != address(0), "SrUsdsQueues/receiver-zero-address");
         require(!_locked(), "SrUsdsQueues/queue-locked");
         Position storage pos = queue.positions[controller];
-        require(pos.gen == queue.currentGen, "SrUsdsQueues/not-current-gen");
-        require(pos.shares > 0, "SrUsdsQueues/zero-shares");
+        require(pos.gen == queue.gen, "SrUsdsQueues/not-current-gen");
+        require(pos.units > 0, "SrUsdsQueues/zero-units");
 
         // Keep whatever already converted claimable
         _checkpoint(queue, pos);
 
         // Calculate the still pending amount
-        amount = pos.shares * queue.totalUnderlying / queue.totalShares;
+        amount = pos.units * queue.pendingUnderlying / queue.totalUnits;
 
         // Update totals
-        queue.totalUnderlying -= amount;
-        queue.totalShares -= pos.shares;
+        queue.pendingUnderlying -= amount;
+        queue.totalUnits -= pos.units;
 
-        // Clear shares
-        pos.shares = 0;
+        // Clear units
+        pos.units = 0;
 
         // If last controller cancels, clear any rounding dust so the next request starts at 1:1
-        if (queue.totalShares == 0) {
-            queue.totalUnderlying = 0; // TODO: I think we can remove this
+        if (queue.totalUnits == 0) {
+            queue.pendingUnderlying = 0; // TODO: I think we can remove this
         }
 
         // Return the pending amount
@@ -386,37 +386,37 @@ contract SrUsdsQueues is UUPSUpgradeable {
         return _locked();
     }
 
-    /// @notice Whether the deposit queue is closed to new requests: its generation is past the share ratio limit and reopens once drained
+    /// @notice Whether the deposit queue is closed to new requests: its generation is past the unit ratio limit and reopens once drained
     function isQueueDepositClosed() external view returns (bool) {
         return _closed(depositQueue);
     }
 
-    /// @notice Whether the redeem queue is closed to new requests: its generation is past the share ratio limit and reopens once drained
+    /// @notice Whether the redeem queue is closed to new requests: its generation is past the unit ratio limit and reopens once drained
     function isQueueRedeemClosed() external view returns (bool) {
         return _closed(redeemQueue);
     }
 
     /// @notice Assets still waiting to be converted to shares
     function pendingDeposit(address controller) external view returns (uint256 assets) {
-        Position storage pos = depositQueue.positions[controller];
-        return (pos.shares == 0 || pos.gen < depositQueue.currentGen) ? 0 : pos.shares * depositQueue.totalUnderlying / depositQueue.totalShares;
+        Position memory pos = depositQueue.positions[controller];
+        return (pos.units == 0 || pos.gen < depositQueue.gen) ? 0 : pos.units * depositQueue.pendingUnderlying / depositQueue.totalUnits;
     }
 
     /// @notice Shares still waiting to be converted to assets
     function pendingRedeem(address controller) external view returns (uint256 shares) {
-        Position storage pos = redeemQueue.positions[controller];
-        return (pos.shares == 0 || pos.gen < redeemQueue.currentGen) ? 0 : pos.shares * redeemQueue.totalUnderlying / redeemQueue.totalShares;
+        Position memory pos = redeemQueue.positions[controller];
+        return (pos.units == 0 || pos.gen < redeemQueue.gen) ? 0 : pos.units * redeemQueue.pendingUnderlying / redeemQueue.totalUnits;
     }
 
     /// @notice Shares converted from deposits and ready to claim
     function claimableDeposit(address controller) external view returns (uint256 shares) {
         Position memory pos = depositQueue.positions[controller];
-        return pos.claimable + pos.shares * (depositQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
+        return pos.claimable + pos.units * (depositQueue.convertedPerUnit[pos.gen] - pos.checkpoint) / RAY;
     }
 
     /// @notice Assets converted from redeems and ready to claim
     function claimableRedeem(address controller) external view returns (uint256 assets) {
         Position memory pos = redeemQueue.positions[controller];
-        return pos.claimable + pos.shares * (redeemQueue.rewardPerToken[pos.gen] - pos.rewardDebt) / RAY;
+        return pos.claimable + pos.units * (redeemQueue.convertedPerUnit[pos.gen] - pos.checkpoint) / RAY;
     }
 }

@@ -97,19 +97,19 @@ The Beam bounds each settlement: `profit ≤ maxMint` for gains, `-profit ≤ ma
 
 Each queue pools all requests into a **generation** that shares every conversion pro rata:
 
-- A request adds the underlying (sUSDS or srUSDS) to the queue and gives the position internal queue shares in proportion to it.
+- A request adds the underlying (sUSDS or srUSDS) to the queue and gives the position queue **units** in proportion to it: one per unit of underlying at the generation's current ratio.
 - Each settlement converts part or all of the queue. Every position in the generation gets the same fraction: its share of what was converted becomes **claimable**, and the rest stays **pending**.
-- Converted amounts are tracked with a per-generation accumulator (`rewardPerToken`) and credited lazily, so a settlement does constant work regardless of how many positions there are.
+- Converted amounts are tracked with a per-generation accumulator (`convertedPerUnit`) and credited lazily, each position keeping a `checkpoint` of the accumulator, so a settlement does constant work regardless of how many positions there are.
 - When a conversion takes everything that is queued, the generation ends. New requests start the next one; positions in an ended generation keep their claimable balance.
 - There is no time priority within a generation: a request that joins later shares the next conversions equally with those that were already waiting, and never receives anything converted before it joined.
 
 **Example.** Alice queues 100 sUSDS and Bob 300. A settlement converts 200, half of the queue: Alice can claim 50 srUSDS with 50 still pending, and Bob 150 with 150 pending. Carol then queues 100. The next settlement converts 150 of the 300 pending, again half: Alice gets 25, Bob 75 and Carol 50.
 
-### Share Ratio Limit
+### Unit Ratio Limit
 
-- A partial conversion removes underlying from the queue but keeps all its internal shares, so the shares per unit of underlying grow with each partial conversion within a generation. A conversion always uses its full capacity, whatever it leaves behind.
-- The ratio is a problem once it gets extreme. A request joining at a ratio of `r` is given `r` shares per unit of underlying, and each conversion is credited as a reward per share rounded down to 27 decimals, so a position loses up to `r * 1e-9` wei per token on every conversion. At a ratio of 1e9 that is a wei. With no limit, a conversion that leaves a single wei behind would push the ratio to 1e20 or more, where each conversion loses up to 1e11 wei per token joined (hundreds of tokens on a large queue) and the products in requests and cancels get within a few orders of magnitude of overflowing.
-- So requests are accepted only while the ratio is at most `MAX_SHARE_RATIO` (1e9). Past it the generation is **closed**: `queueDeposit` or `queueRedeem` reverts with `queue-closed` until a conversion drains the generation and the next one starts at 1:1. Cancels and claims keep working while it is closed. `isQueueDepositClosed()` and `isQueueRedeemClosed()` report the state.
+- A partial conversion removes underlying from the queue but keeps all its units, so the units per unit of underlying grow with each partial conversion within a generation. A conversion always uses its full capacity, whatever it leaves behind.
+- The ratio is a problem once it gets extreme. A request joining at a ratio of `r` is given `r` units per unit of underlying, and each conversion is credited per unit rounded down to 27 decimals, so a position loses up to `r * 1e-9` wei per token on every conversion. At a ratio of 1e9 that is a wei. With no limit, a conversion that leaves a single wei behind would push the ratio to 1e20 or more, where each conversion loses up to 1e11 wei per token joined (hundreds of tokens on a large queue) and the products in requests and cancels get within a few orders of magnitude of overflowing.
+- So requests are accepted only while the ratio is at most `MAX_UNIT_RATIO` (1e9). Past it the generation is **closed**: `queueDeposit` or `queueRedeem` reverts with `queue-closed` until a conversion drains the generation and the next one starts at 1:1. Cancels and claims keep working while it is closed. `isQueueDepositClosed()` and `isQueueRedeemClosed()` report the state.
 - The limit is passed by a partial conversion that leaves less than a billionth of the queue behind, or after about 30 conversions of half the queue. A closed queue reopens as soon as the remainder is converted, normally at the next settlement.
 
 ### Emergency Halt (`SrUsdsMom`)

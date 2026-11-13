@@ -200,7 +200,7 @@ contract SrUsdsQueues is UUPSUpgradeable {
         return queue.totalUnits > queue.pendingUnderlying * MAX_UNIT_RATIO;
     }
 
-    /// @dev Convert up to capacity of a queue's underlying into its reward through the share token:
+    /// @dev Convert up to capacity of a queue's underlying through the share token:
     ///      asset into shares for the deposit queue, shares into asset for the redeem queue
     function _convert(Queue storage queue, TokenLike underlying, uint256 capacity) internal returns (uint256 converted, uint256 received) {
         uint256 pendingUnderlying = queue.pendingUnderlying;
@@ -331,6 +331,18 @@ contract SrUsdsQueues is UUPSUpgradeable {
         token.transfer(receiver, claimed);
     }
 
+    /// @dev What a position still has waiting to be converted: nothing once its generation has been drained
+    function _pending(Queue storage queue, address controller) internal view returns (uint256) {
+        Position memory pos = queue.positions[controller];
+        return (pos.units == 0 || pos.gen < queue.gen) ? 0 : pos.units * queue.pendingUnderlying / queue.totalUnits;
+    }
+
+    /// @dev What a position can claim: its stored balance plus what converted in its generation since its last checkpoint
+    function _claimable(Queue storage queue, address controller) internal view returns (uint256) {
+        Position memory pos = queue.positions[controller];
+        return pos.claimable + pos.units * (queue.convertedPerUnit[pos.gen] - pos.checkpoint) / RAY;
+    }
+
     // --- User Functions ---
 
     /// @notice Approve or revoke `operator` to request, cancel and claim on behalf of msg.sender
@@ -396,25 +408,21 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     /// @notice Assets still waiting to be converted to shares
     function pendingDeposit(address controller) external view returns (uint256 assets) {
-        Position memory pos = depositQueue.positions[controller];
-        return (pos.units == 0 || pos.gen < depositQueue.gen) ? 0 : pos.units * depositQueue.pendingUnderlying / depositQueue.totalUnits;
+        return _pending(depositQueue, controller);
     }
 
     /// @notice Shares still waiting to be converted to assets
     function pendingRedeem(address controller) external view returns (uint256 shares) {
-        Position memory pos = redeemQueue.positions[controller];
-        return (pos.units == 0 || pos.gen < redeemQueue.gen) ? 0 : pos.units * redeemQueue.pendingUnderlying / redeemQueue.totalUnits;
+        return _pending(redeemQueue, controller);
     }
 
     /// @notice Shares converted from deposits and ready to claim
     function claimableDeposit(address controller) external view returns (uint256 shares) {
-        Position memory pos = depositQueue.positions[controller];
-        return pos.claimable + pos.units * (depositQueue.convertedPerUnit[pos.gen] - pos.checkpoint) / RAY;
+        return _claimable(depositQueue, controller);
     }
 
     /// @notice Assets converted from redeems and ready to claim
     function claimableRedeem(address controller) external view returns (uint256 assets) {
-        Position memory pos = redeemQueue.positions[controller];
-        return pos.claimable + pos.units * (redeemQueue.convertedPerUnit[pos.gen] - pos.checkpoint) / RAY;
+        return _claimable(redeemQueue, controller);
     }
 }

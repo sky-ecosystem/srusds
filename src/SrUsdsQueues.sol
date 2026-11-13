@@ -248,11 +248,24 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     // --- Internal Queue Logic ---
 
-    /// @dev Move what has converted since the last checkpoint into the stored claimable balance, without paying it out
+    /// @dev Bring a position up to date with its queue, in two steps:
+    ///      1. Add what converted since its last checkpoint to its stored claimable balance. Nothing is paid out here.
+    ///      2. If its generation was fully converted, clear its units, as none of them is pending any more, and move
+    ///         the position to the queue's current generation.
+    ///      So after a checkpoint, any units the position still has are pending in the queue's current generation
     function _checkpoint(Queue storage queue, Position storage pos) internal {
-        uint256 cpu = queue.convertedPerUnit[pos.gen];
-        pos.claimable += pos.units * (cpu - pos.checkpoint) / RAY;
-        pos.checkpoint = cpu;
+        uint256 positionGen = pos.gen;
+        uint256 convertedPerUnit = queue.convertedPerUnit[positionGen];
+        pos.claimable += pos.units * (convertedPerUnit - pos.checkpoint) / RAY;
+
+        uint256 currentGen = queue.gen;
+        if (positionGen < currentGen) {
+            // The position's generation was fully converted: nothing is pending, so its units are spent
+            pos.gen = currentGen;
+            pos.units = 0;
+            convertedPerUnit = queue.convertedPerUnit[currentGen];
+        }
+        pos.checkpoint = convertedPerUnit;
     }
 
     /// @dev msg.sender must be `usr` or an operator approved by `usr`
@@ -276,18 +289,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
                         ? amount
                         : amount * queue.totalUnits / queue.pendingUnderlying;
 
-        // Update state
-        uint256 gen = queue.gen;
+        // Update state: after the checkpoint the position is in the current generation, with no units left from an older one
         queue.pendingUnderlying += amount;
         queue.totalUnits += units;
-        if (pos.gen < gen) {
-            // Start a new position in the current generation; the old one's claimable balance is kept
-            pos.gen = gen;
-            pos.units = units;
-            pos.checkpoint = queue.convertedPerUnit[gen];
-        } else {
-            pos.units += units;
-        }
+        pos.units += units;
 
         // Escrow the queued amount from the owner
         token.transferFrom(owner, address(this), amount);
@@ -298,23 +303,24 @@ contract SrUsdsQueues is UUPSUpgradeable {
         require(receiver != address(0), "SrUsdsQueues/receiver-zero-address");
         require(!_locked(), "SrUsdsQueues/queue-locked");
         Position storage pos = queue.positions[controller];
-        require(pos.gen == queue.gen, "SrUsdsQueues/not-current-gen");
-        require(pos.units > 0, "SrUsdsQueues/zero-units");
 
-        // Keep whatever already converted claimable
+        // Keep whatever already converted claimable. Units left after it are pending in the current generation: there are
+        // none if the position never requested, already cancelled, or its generation was fully converted
         _checkpoint(queue, pos);
 
-        // Calculate the still pending amount
-        amount = pos.units * queue.pendingUnderlying / queue.totalUnits;
+        // Calculate the still pending amount: nothing in an empty queue, where there are no units to divide by.
+        // Safe only after the checkpoint, as a position left in a drained generation has units while the queue may have none
+        uint256 totalUnits = queue.totalUnits;
+        amount = totalUnits == 0 ? 0 : pos.units * queue.pendingUnderlying / totalUnits;
 
         // Update totals
         queue.pendingUnderlying -= amount;
-        queue.totalUnits -= pos.units;
+        queue.totalUnits = totalUnits - pos.units;
 
         // Clear units
         pos.units = 0;
 
-        // Return the pending amount
+        // Return the pending amount, whatever it is: a cancel with nothing pending returns 0 like any other
         token.transfer(receiver, amount);
     }
 
@@ -365,13 +371,13 @@ contract SrUsdsQueues is UUPSUpgradeable {
         emit QueueRedeem(controller, owner, msg.sender, shares);
     }
 
-    /// @notice Cancel `controller`'s pending deposit request, returning its pending assets to `receiver` (anything converted stays claimable)
+    /// @notice Cancel `controller`'s pending deposit request, returning its pending assets to `receiver` (anything converted stays claimable; 0 if nothing is pending)
     function cancelDeposit(address receiver, address controller) external returns (uint256 assets) {
         assets = _cancel(depositQueue, asset, receiver, controller);
         emit CancelDeposit(controller, receiver, msg.sender, assets);
     }
 
-    /// @notice Cancel `controller`'s pending redeem request, returning its pending shares to `receiver` (anything converted stays claimable)
+    /// @notice Cancel `controller`'s pending redeem request, returning its pending shares to `receiver` (anything converted stays claimable; 0 if nothing is pending)
     function cancelRedeem(address receiver, address controller) external returns (uint256 shares) {
         shares = _cancel(redeemQueue, share, receiver, controller);
         emit CancelRedeem(controller, receiver, msg.sender, shares);

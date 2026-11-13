@@ -35,7 +35,7 @@ Roles follow ERC-7540: `owner` provides the tokens of a request, `controller` ow
 
 - Returns the `controller`'s whole **pending** sUSDS (or srUSDS) to `receiver`. Anything already converted stays claimable.
 - `msg.sender` must be `controller` or its operator.
-- Reverts once the request's generation has been fully converted, since nothing is pending then.
+- Returns 0, without reverting, when nothing is pending: no request was made, it was already cancelled, or its generation has been fully converted.
 
 #### `claimDeposit(shares, receiver, controller)` / `claimRedeem(assets, receiver, controller)`
 

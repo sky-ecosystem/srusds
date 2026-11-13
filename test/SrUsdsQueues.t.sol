@@ -31,6 +31,7 @@ contract SrUsdsQueuesTest is DssTest {
 
     event Settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity, uint256 depositsConverted, uint256 depositsReceived, uint256 redeemsConverted, uint256 redeemsReceived);
     event SetOperator(address indexed controller, address indexed operator, bool approved);
+    event Transfer(address indexed from, address indexed to, uint256 value);
     event QueueDeposit(address indexed controller, address indexed owner, address sender, uint256 assets);
     event Referral(address indexed controller, uint256 assets, uint16 indexed referral);
     event QueueRedeem(address indexed controller, address indexed owner, address sender, uint256 shares);
@@ -534,8 +535,7 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(shares, 0);
         assertEq(underlying, 0);
 
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-units");
-        queues.cancelDeposit(alice, alice);
+        vm.prank(alice); assertEq(queues.cancelDeposit(alice, alice), 0); // Already cancelled: nothing more to return
     }
 
     function testCancelRedeem() public {
@@ -551,10 +551,51 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.claimableRedeem(alice), 25e18);
     }
 
-    function testCancelReverts() public {
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-units");
-        queues.cancelDeposit(alice, alice);
+    /// A cancel with nothing pending is not an error: whatever the reason, it returns 0 and behaves like any other
+    /// cancel, with a transfer and an event of 0, and it keeps the checkpoint it made
+    function testCancelWithNothingPendingReturnsZero() public {
+        // Never requested
+        vm.expectEmit(true, true, true, true, address(susds));
+        emit Transfer(address(queues), bob, 0);
+        vm.expectEmit(true, true, true, true, address(queues));
+        emit CancelDeposit(alice, bob, alice, 0);
+        vm.prank(alice); assertEq(queues.cancelDeposit(bob, alice), 0);
 
+        // Live units whose share of what is left rounds down to nothing
+        _queueDeposit(alice, 1_000_000e18);
+        _queueDeposit(bob, 100e18);
+        _settleDeposit(1_000_100e18 - 1); // Everything but a wei
+        vm.expectEmit(true, true, true, true, address(susds));
+        emit Transfer(address(queues), bob, 0);
+        vm.expectEmit(true, true, true, true, address(queues));
+        emit CancelDeposit(bob, bob, bob, 0);
+        vm.prank(bob); assertEq(queues.cancelDeposit(bob, bob), 0);
+
+        // Generation fully converted: the cancel banks what converted and retires the units
+        _settleDeposit(type(uint256).max);
+        (uint256 gen, uint256 units,, uint256 claimable) = _depositPosition(alice);
+        assertEq(gen, 0);
+        assertEq(units, 1_000_000e18);
+        assertEq(claimable, 0);
+        vm.expectEmit(true, true, true, true, address(susds));
+        emit Transfer(address(queues), alice, 0);
+        vm.expectEmit(true, true, true, true, address(queues));
+        emit CancelDeposit(alice, alice, alice, 0);
+        vm.prank(alice); assertEq(queues.cancelDeposit(alice, alice), 0);
+        (gen, units,, claimable) = _depositPosition(alice);
+        assertEq(gen, 1);
+        assertEq(units, 0);
+        assertEq(claimable, queues.claimableDeposit(alice));
+        assertApproxEqAbs(claimable, 1_000_000e18, 1);
+
+        // The redeem queue too
+        vm.expectEmit(true, true, true, true, address(queues));
+        emit CancelRedeem(carol, carol, carol, 0);
+        vm.prank(carol); assertEq(queues.cancelRedeem(carol, carol), 0);
+        _checkInvariants();
+    }
+
+    function testCancelReverts() public {
         _queueDeposit(alice, 100e18);
         vm.prank(alice); vm.expectRevert("SrUsdsQueues/receiver-zero-address");
         queues.cancelDeposit(address(0), alice);
@@ -750,6 +791,41 @@ contract SrUsdsQueuesTest is DssTest {
         assertApproxEqAbs(queues.claimableDeposit(carol), 40e18, 1e6);
     }
 
+    /// Any checkpoint retires a position left in a drained generation: its units are cleared and it moves to
+    /// the current generation at that generation's accumulator, so it earns nothing converted there before it
+    /// requests again. No view changes value when that happens
+    function testCheckpointRetiresStalePosition() public {
+        _queueDeposit(alice, 100e18);
+        _settleDeposit(type(uint256).max); // Generation 0 drained
+        _queueDeposit(bob, 100e18);
+        _settleDeposit(40e18);             // Generation 1 partly converted, so its accumulator is not zero
+
+        (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) = _depositPosition(alice);
+        assertEq(gen, 0);                  // Still as it was left
+        assertEq(units, 100e18);
+        assertEq(checkpoint, 0);
+        assertEq(claimable, 0);
+        assertEq(queues.pendingDeposit(alice), 0);
+        assertEq(queues.claimableDeposit(alice), 100e18);
+
+        vm.prank(alice); queues.claimDeposit(30e18, alice, alice);
+        (gen, units, checkpoint, claimable) = _depositPosition(alice);
+        assertEq(gen, 1);
+        assertEq(units, 0);
+        assertEq(checkpoint, 0.4e27);      // Generation 1's accumulator: 40 converted over 100 units
+        assertEq(claimable, 70e18);
+        assertEq(queues.pendingDeposit(alice), 0);
+        assertEq(queues.claimableDeposit(alice), 70e18);
+        vm.prank(alice); assertEq(queues.cancelDeposit(alice, alice), 0);
+
+        _queueDeposit(alice, 60e18);       // Joins generation 1 next to Bob's 60 still pending
+        assertEq(queues.claimableDeposit(alice), 70e18); // Nothing from the 40 converted before she joined
+        assertEq(queues.pendingDeposit(alice), 60e18);
+        _settleDeposit(60e18);             // Half of the 120 pending
+        assertEq(queues.claimableDeposit(alice), 100e18);
+        assertEq(queues.claimableDeposit(bob), 70e18);
+    }
+
     /// The last position to cancel holds every remaining unit, so it is returned everything still pending:
     /// no dust is left behind, both totals reach zero together, and the next request starts at 1:1
     function testLastCancelLeavesNoDust() public {
@@ -780,7 +856,7 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.pendingDeposit(bob), 5e18);
     }
 
-    /// Once its generation is drained a request has nothing pending: cancel reverts and pending shows 0, while
+    /// Once its generation is drained a request has nothing pending: cancel returns 0 and pending shows 0, while
     /// what converted stays claimable. A new request starts a position in the current generation, keeping it
     function testDrainedGeneration() public {
         _queueDeposit(alice, 100e18);
@@ -788,8 +864,8 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(_depositGen(), 1);
         assertEq(queues.pendingDeposit(alice), 0);
         assertEq(queues.claimableDeposit(alice), 100e18);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/not-current-gen");
-        queues.cancelDeposit(alice, alice);
+        vm.prank(alice); assertEq(queues.cancelDeposit(alice, alice), 0);
+        assertEq(queues.claimableDeposit(alice), 100e18);
 
         _queueDeposit(bob, 100e18); // The new generation starts at 1:1
         _queueDeposit(alice, 50e18);
@@ -830,8 +906,8 @@ contract SrUsdsQueuesTest is DssTest {
         assertFalse(queues.isQueueRedeemClosed());
         assertEq(queues.pendingRedeem(alice), 0);
         assertEq(queues.claimableRedeem(alice), 1_000_000e18);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/not-current-gen");
-        queues.cancelRedeem(alice, alice);
+        vm.prank(alice); assertEq(queues.cancelRedeem(alice, alice), 0);
+        assertEq(queues.claimableRedeem(alice), 1_000_000e18);
         _queueRedeem(bob, bobShares); // Reopened
         assertEq(queues.pendingRedeem(bob), bobShares);
     }

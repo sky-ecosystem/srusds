@@ -119,6 +119,16 @@ contract SrUsdsQueuesTest is DssTest {
         (gen,,) = queues.depositQueue();
     }
 
+    /// @dev Both queues: totalUnits >= pendingUnderlying, and one is zero exactly when the other is
+    function _checkInvariants() internal view {
+        (, uint256 units, uint256 underlying) = queues.depositQueue();
+        assertGe(units, underlying);
+        assertEq(units == 0, underlying == 0);
+        (, units, underlying) = queues.redeemQueue();
+        assertGe(units, underlying);
+        assertEq(units == 0, underlying == 0);
+    }
+
     function _depositClosed() internal view returns (bool closed) {
         (, uint256 shares, uint256 underlying) = queues.depositQueue();
         closed = shares > underlying * MAX_UNIT_RATIO;
@@ -740,6 +750,36 @@ contract SrUsdsQueuesTest is DssTest {
         assertApproxEqAbs(queues.claimableDeposit(carol), 40e18, 1e6);
     }
 
+    /// The last position to cancel holds every remaining unit, so it is returned everything still pending:
+    /// no dust is left behind, both totals reach zero together, and the next request starts at 1:1
+    function testLastCancelLeavesNoDust() public {
+        _queueDeposit(alice, 100e18);
+        _queueDeposit(bob, 33e18 + 1);
+        _settleDeposit(7e18 + 3); // An uneven ratio, so every later amount rounds
+        _queueDeposit(carol, 11e18 + 7);
+        _settleDeposit(1e18 + 1);
+        _checkInvariants();
+
+        (,, uint256 pending) = queues.depositQueue();
+        vm.prank(bob);   uint256 returned  = queues.cancelDeposit(bob, bob);
+        _checkInvariants();
+        vm.prank(alice); returned         += queues.cancelDeposit(alice, alice);
+        _checkInvariants();
+        vm.prank(carol); returned         += queues.cancelDeposit(carol, carol);
+
+        assertEq(returned, pending); // The last one out gets whatever the others' rounding left
+        (uint256 gen, uint256 units, uint256 underlying) = queues.depositQueue();
+        assertEq(gen, 0);            // Cancelling does not end the generation
+        assertEq(units, 0);
+        assertEq(underlying, 0);
+
+        _queueDeposit(bob, 5e18);
+        (, units, underlying) = queues.depositQueue();
+        assertEq(units, 5e18);
+        assertEq(underlying, 5e18);
+        assertEq(queues.pendingDeposit(bob), 5e18);
+    }
+
     /// Once its generation is drained a request has nothing pending: cancel reverts and pending shows 0, while
     /// what converted stays claimable. A new request starts a position in the current generation, keeping it
     function testDrainedGeneration() public {
@@ -844,8 +884,10 @@ contract SrUsdsQueuesTest is DssTest {
             if (r >> 96 & 7 == 0) {
                 vm.prank(users[u]); got[u] += queues.claimDeposit(type(uint256).max, users[u], users[u]);
             }
+            _checkInvariants();
             // Fills of any size, whatever they leave behind; now and then a drain
             _settleFraction(r >> 104 & 15 == 0 ? 10_000 : bound(r >> 128, 0, 99_99));
+            _checkInvariants();
         }
 
         _settleFraction(10_000);

@@ -61,6 +61,9 @@ contract SrUsdsQueues is UUPSUpgradeable {
         uint256 claimable;  // Converted and not yet claimed, as of the last checkpoint
     }
 
+    // Invariants: totalUnits >= pendingUnderlying (units are minted at 1:1 or above, and a conversion only lowers
+    // pendingUnderlying), and totalUnits == 0 exactly when pendingUnderlying == 0 (the last position to cancel
+    // holds every unit, so it is returned everything pending)
     struct Queue {
         uint256 gen;
         uint256 totalUnits;
@@ -204,10 +207,11 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
         converted = capacity < pendingUnderlying ? capacity : pendingUnderlying;
 
-        // Nothing to convert (empty queue or no capacity); also avoids dividing by totalUnits == 0 below
+        // Nothing to convert (empty queue or no capacity); also avoids dividing by totalUnits == 0 below,
+        // as totalUnits is zero only when pendingUnderlying is
         if (converted == 0) return (0, 0);
 
-        received = underlying == asset
+        received = address(underlying) == address(asset)
                    ? share.deposit(converted, address(this))
                    : share.redeem(converted, address(this), address(this));
 
@@ -267,11 +271,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
         _checkpoint(queue, pos);
 
-        // Calculate the queue units to mint
+        // Calculate the queue units to mint: never zero, as totalUnits >= pendingUnderlying makes it at least amount
         uint256 units = queue.totalUnits == 0
                         ? amount
                         : amount * queue.totalUnits / queue.pendingUnderlying;
-        require(units > 0, "SrUsdsQueues/zero-units");
 
         // Update state
         uint256 gen = queue.gen;
@@ -310,11 +313,6 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
         // Clear units
         pos.units = 0;
-
-        // If last controller cancels, clear any rounding dust so the next request starts at 1:1
-        if (queue.totalUnits == 0) {
-            queue.pendingUnderlying = 0; // TODO: I think we can remove this
-        }
 
         // Return the pending amount
         token.transfer(receiver, amount);

@@ -161,7 +161,7 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
 
     // --- Deployment ---
 
-    function testDeployAndInit() public {
+    function testDeployAndInit() public view {
         // SrUsds
         assertEq(token.chi(), 1.02e27);
         assertEq(token.wards(pauseProxy), 1);

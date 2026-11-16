@@ -50,7 +50,7 @@ contract SrUsdsTest is TokenFuzzChecks {
         unchecked { z = x != 0 ? ((x - 1) / y) + 1 : 0; }
     }
 
-    function testInitialize() public {
+    function testInitialize() public view {
         assertEq(srusds.chi(), RAY);
         assertEq(srusds.wards(address(this)), 1);
         assertEq(address(srusds.usdsJoin()), address(join));

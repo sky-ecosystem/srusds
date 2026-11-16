@@ -171,7 +171,7 @@ contract SrUsdsQueuesTest is DssTest {
 
     // --- Administration ---
 
-    function testConstructorAndInitialize() public {
+    function testConstructorAndInitialize() public view {
         assertEq(address(queues.share()), address(srusds));
         assertEq(address(queues.asset()), address(susds));
         assertEq(queues.wards(address(this)), 1);

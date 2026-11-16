@@ -153,19 +153,19 @@ contract SrUsdsQueuesTest is DssTest {
     /// @dev A stored position, read straight from storage. depositQueue is at slot 2 and redeemQueue at slot 7;
     ///      positions is the Queue struct's 5th member (after gen, totalUnits, pendingUnderlying and
     ///      convertedPerUnit), so the mappings live at slots 6 and 11
-    function _position(uint256 slot, address usr) internal view returns (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) {
+    function _position(uint256 slot, address usr) internal view returns (uint256 gen, uint256 units, uint256 lastConvertedPerUnit, uint256 claimable) {
         bytes32 base = keccak256(abi.encode(usr, slot));
-        gen        = uint256(vm.load(address(queues), base));
-        units      = uint256(vm.load(address(queues), bytes32(uint256(base) + 1)));
-        checkpoint = uint256(vm.load(address(queues), bytes32(uint256(base) + 2)));
-        claimable  = uint256(vm.load(address(queues), bytes32(uint256(base) + 3)));
+        gen                  = uint256(vm.load(address(queues), base));
+        units                = uint256(vm.load(address(queues), bytes32(uint256(base) + 1)));
+        lastConvertedPerUnit = uint256(vm.load(address(queues), bytes32(uint256(base) + 2)));
+        claimable            = uint256(vm.load(address(queues), bytes32(uint256(base) + 3)));
     }
 
-    function _depositPosition(address usr) internal view returns (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) {
+    function _depositPosition(address usr) internal view returns (uint256 gen, uint256 units, uint256 lastConvertedPerUnit, uint256 claimable) {
         return _position(6, usr);
     }
 
-    function _redeemPosition(address usr) internal view returns (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) {
+    function _redeemPosition(address usr) internal view returns (uint256 gen, uint256 units, uint256 lastConvertedPerUnit, uint256 claimable) {
         return _position(11, usr);
     }
 
@@ -326,10 +326,10 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(gen, 0);
         assertEq(shares, 100e18);
         assertEq(underlying, 100e18);
-        (uint256 posGen, uint256 posUnits, uint256 checkpoint, uint256 claimable) = _depositPosition(alice);
+        (uint256 posGen, uint256 posUnits, uint256 lastConvertedPerUnit, uint256 claimable) = _depositPosition(alice);
         assertEq(posGen, 0);
         assertEq(posUnits, 100e18);
-        assertEq(checkpoint, 0);
+        assertEq(lastConvertedPerUnit, 0);
         assertEq(claimable, 0);
         assertEq(susds.balanceOf(address(queues)), 100e18);
         assertEq(susds.balanceOf(alice), 0);
@@ -552,7 +552,7 @@ contract SrUsdsQueuesTest is DssTest {
     }
 
     /// A cancel with nothing pending is not an error: whatever the reason, it returns 0 and behaves like any other
-    /// cancel, with a transfer and an event of 0, and it keeps the checkpoint it made
+    /// cancel, with a transfer and an event of 0, and it keeps the sync it made
     function testCancelWithNothingPendingReturnsZero() public {
         // Never requested
         vm.expectEmit(true, true, true, true, address(susds));
@@ -623,9 +623,9 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.claimDeposit(type(uint256).max, alice, alice), 0); // Nothing to claim is fine
         vm.stopPrank();
 
-        (,, uint256 checkpoint, uint256 claimable) = _depositPosition(alice);
+        (,, uint256 lastConvertedPerUnit, uint256 claimable) = _depositPosition(alice);
         assertEq(claimable, 0);
-        assertEq(checkpoint, 0.4e27);
+        assertEq(lastConvertedPerUnit, 0.4e27);
     }
 
     function testClaimRedeem() public {
@@ -791,28 +791,28 @@ contract SrUsdsQueuesTest is DssTest {
         assertApproxEqAbs(queues.claimableDeposit(carol), 40e18, 1e6);
     }
 
-    /// Any checkpoint retires a position left in a drained generation: its units are cleared and it moves to
+    /// Any sync retires a position left in a drained generation: its units are cleared and it moves to
     /// the current generation at that generation's accumulator, so it earns nothing converted there before it
     /// requests again. No view changes value when that happens
-    function testCheckpointRetiresStalePosition() public {
+    function testSyncRetiresStalePosition() public {
         _queueDeposit(alice, 100e18);
         _settleDeposit(type(uint256).max); // Generation 0 drained
         _queueDeposit(bob, 100e18);
         _settleDeposit(40e18);             // Generation 1 partly converted, so its accumulator is not zero
 
-        (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) = _depositPosition(alice);
+        (uint256 gen, uint256 units, uint256 lastConvertedPerUnit, uint256 claimable) = _depositPosition(alice);
         assertEq(gen, 0);                  // Still as it was left
         assertEq(units, 100e18);
-        assertEq(checkpoint, 0);
+        assertEq(lastConvertedPerUnit, 0);
         assertEq(claimable, 0);
         assertEq(queues.pendingDeposit(alice), 0);
         assertEq(queues.claimableDeposit(alice), 100e18);
 
         vm.prank(alice); queues.claimDeposit(30e18, alice, alice);
-        (gen, units, checkpoint, claimable) = _depositPosition(alice);
+        (gen, units, lastConvertedPerUnit, claimable) = _depositPosition(alice);
         assertEq(gen, 1);
         assertEq(units, 0);
-        assertEq(checkpoint, 0.4e27);      // Generation 1's accumulator: 40 converted over 100 units
+        assertEq(lastConvertedPerUnit, 0.4e27);      // Generation 1's accumulator: 40 converted over 100 units
         assertEq(claimable, 70e18);
         assertEq(queues.pendingDeposit(alice), 0);
         assertEq(queues.claimableDeposit(alice), 70e18);
@@ -869,10 +869,10 @@ contract SrUsdsQueuesTest is DssTest {
 
         _queueDeposit(bob, 100e18); // The new generation starts at 1:1
         _queueDeposit(alice, 50e18);
-        (uint256 gen, uint256 units, uint256 checkpoint, uint256 claimable) = _depositPosition(alice);
+        (uint256 gen, uint256 units, uint256 lastConvertedPerUnit, uint256 claimable) = _depositPosition(alice);
         assertEq(gen, 1);
         assertEq(units, 50e18);
-        assertEq(checkpoint, 0);
+        assertEq(lastConvertedPerUnit, 0);
         assertEq(claimable, 100e18);
         assertEq(queues.pendingDeposit(alice), 50e18);
         assertEq(queues.claimableDeposit(alice), 100e18);

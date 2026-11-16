@@ -99,7 +99,7 @@ Each queue pools all requests into a **generation** that shares every conversion
 
 - A request adds the underlying (sUSDS or srUSDS) to the queue and gives the position queue **units** in proportion to it: one per unit of underlying at the generation's current ratio.
 - Each settlement converts part or all of the queue. Every position in the generation gets the same fraction: its share of what was converted becomes **claimable**, and the rest stays **pending**.
-- Converted amounts are tracked with a per-generation accumulator (`convertedPerUnit`) and credited lazily, each position keeping a `checkpoint` of the accumulator, so a settlement does constant work regardless of how many positions there are.
+- Converted amounts are tracked with a per-generation accumulator (`convertedPerUnit`) and credited lazily, each position keeping the accumulator's value at its last sync (`lastConvertedPerUnit`), so a settlement does constant work regardless of how many positions there are.
 - When a conversion takes everything that is queued, the generation ends. New requests start the next one; positions in an ended generation keep their claimable balance.
 - There is no time priority within a generation: a request that joins later shares the next conversions equally with those that were already waiting, and never receives anything converted before it joined.
 

@@ -55,10 +55,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
     // --- Structs ---
 
     struct Position {
-        uint256 gen;        // Generation this position belongs to
-        uint256 units;      // Queue units held: one per unit of underlying at the ratio when it joined
-        uint256 checkpoint; // convertedPerUnit at the last checkpoint [ray]
-        uint256 claimable;  // Converted and not yet claimed, as of the last checkpoint
+        uint256 gen;                  // Generation this position belongs to
+        uint256 units;                // Queue units held: one per unit of underlying at the ratio when it joined
+        uint256 lastConvertedPerUnit; // convertedPerUnit of its generation at the last sync [ray]
+        uint256 claimable;            // Converted and not yet claimed, as of the last sync
     }
 
     // Invariants: totalUnits >= pendingUnderlying (units are minted at 1:1 or above, and a conversion only lowers
@@ -249,14 +249,14 @@ contract SrUsdsQueues is UUPSUpgradeable {
     // --- Internal Queue Logic ---
 
     /// @dev Bring a position up to date with its queue, in two steps:
-    ///      1. Add what converted since its last checkpoint to its stored claimable balance. Nothing is paid out here.
+    ///      1. Add what converted since its last sync to its stored claimable balance. Nothing is paid out here.
     ///      2. If its generation was fully converted, clear its units, as none of them is pending any more, and move
     ///         the position to the queue's current generation.
-    ///      So after a checkpoint, any units the position still has are pending in the queue's current generation
-    function _checkpoint(Queue storage queue, Position storage pos) internal {
+    ///      So after a sync, any units the position still has are pending in the queue's current generation
+    function _sync(Queue storage queue, Position storage pos) internal {
         uint256 positionGen = pos.gen;
         uint256 convertedPerUnit = queue.convertedPerUnit[positionGen];
-        pos.claimable += pos.units * (convertedPerUnit - pos.checkpoint) / RAY;
+        pos.claimable += pos.units * (convertedPerUnit - pos.lastConvertedPerUnit) / RAY;
 
         uint256 currentGen = queue.gen;
         if (positionGen < currentGen) {
@@ -265,7 +265,7 @@ contract SrUsdsQueues is UUPSUpgradeable {
             pos.units = 0;
             convertedPerUnit = queue.convertedPerUnit[currentGen];
         }
-        pos.checkpoint = convertedPerUnit;
+        pos.lastConvertedPerUnit = convertedPerUnit;
     }
 
     /// @dev msg.sender must be `usr` or an operator approved by `usr`
@@ -282,14 +282,14 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
         Position storage pos = queue.positions[controller];
 
-        _checkpoint(queue, pos);
+        _sync(queue, pos);
 
         // Calculate the queue units to mint: never zero, as totalUnits >= pendingUnderlying makes it at least amount
         uint256 units = queue.totalUnits == 0
                         ? amount
                         : amount * queue.totalUnits / queue.pendingUnderlying;
 
-        // Update state: after the checkpoint the position is in the current generation, with no units left from an older one
+        // Update state: after the sync the position is in the current generation, with no units left from an older one
         queue.pendingUnderlying += amount;
         queue.totalUnits += units;
         pos.units += units;
@@ -306,10 +306,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
         // Keep whatever already converted claimable. Units left after it are pending in the current generation: there are
         // none if the position never requested, already cancelled, or its generation was fully converted
-        _checkpoint(queue, pos);
+        _sync(queue, pos);
 
         // Calculate the still pending amount: nothing in an empty queue, where there are no units to divide by.
-        // Safe only after the checkpoint, as a position left in a drained generation has units while the queue may have none
+        // Safe only after the sync, as a position left in a drained generation has units while the queue may have none
         uint256 totalUnits = queue.totalUnits;
         amount = totalUnits == 0 ? 0 : pos.units * queue.pendingUnderlying / totalUnits;
 
@@ -329,7 +329,7 @@ contract SrUsdsQueues is UUPSUpgradeable {
         require(receiver != address(0), "SrUsdsQueues/receiver-zero-address");
         Position storage pos = queue.positions[controller];
 
-        _checkpoint(queue, pos);
+        _sync(queue, pos);
         claimed = amount == type(uint256).max ? pos.claimable : amount;
         require(claimed <= pos.claimable, "SrUsdsQueues/insufficient-claimable");
         pos.claimable -= claimed;
@@ -343,10 +343,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
         return (pos.units == 0 || pos.gen < queue.gen) ? 0 : pos.units * queue.pendingUnderlying / queue.totalUnits;
     }
 
-    /// @dev What a position can claim: its stored balance plus what converted in its generation since its last checkpoint
+    /// @dev What a position can claim: its stored balance plus what converted in its generation since its last sync
     function _claimable(Queue storage queue, address controller) internal view returns (uint256) {
         Position memory pos = queue.positions[controller];
-        return pos.claimable + pos.units * (queue.convertedPerUnit[pos.gen] - pos.checkpoint) / RAY;
+        return pos.claimable + pos.units * (queue.convertedPerUnit[pos.gen] - pos.lastConvertedPerUnit) / RAY;
     }
 
     // --- User Functions ---

@@ -499,6 +499,34 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.claimableRedeem(bob), 150e18);
     }
 
+    /// A total loss leaves chi at 0, so a settlement that also tries to convert deposits reverts as a whole. The
+    /// loss has to be booked with depositCapacity = 0: redeems convert for nothing and depositors can cancel
+    function testSettleTotalLossWithDepositsWaiting() public {
+        // ~1M srUSDS outstanding at a non-round chi, all of it queued for redemption
+        _queueDeposit(alice, 1_000_000e18 + 987_654_321_987_654_321);
+        _settle(0, type(uint256).max, 0);
+        _settle(12_345.678901234567890123e18, 0, 0);
+        vm.prank(alice); uint256 shares = queues.claimDeposit(type(uint256).max, alice, alice);
+        _queueRedeem(alice, shares);
+        _queueDeposit(bob, 500_000e18);
+
+        vm.warp(_nextDay() + 14 hours);
+        vm.expectRevert(stdError.divisionError);
+        queues.settle(-2_000_000e18, type(uint256).max, type(uint256).max);
+        queues.settle(-2_000_000e18, 0, type(uint256).max);
+
+        assertEq(srusds.chi(), 0);
+        assertEq(srusds.totalSupply(), 0);
+        assertEq(queues.pendingRedeem(alice), 0);
+        assertEq(queues.claimableRedeem(alice), 0);
+        assertEq(queues.pendingDeposit(bob), 500_000e18);
+        assertEq(queues.claimableDeposit(bob), 0);
+        _checkInvariants();
+
+        vm.prank(bob); assertEq(queues.cancelDeposit(bob, bob), 500_000e18);
+        assertEq(susds.balanceOf(bob), 500_000e18);
+    }
+
     /// Every position in a generation gets the same fraction of each conversion, whenever it joined
     function testProportionalDistribution() public {
         _queueDeposit(alice, 100e18);

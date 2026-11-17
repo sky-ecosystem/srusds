@@ -186,6 +186,34 @@ contract SrUsdsTest is TokenFuzzChecks {
         vm.prank(address(0x111)); assertEq(srusds.redeem(100e18, address(0x111), address(0x111)), 0);
     }
 
+    /// A loss of the whole backing, or more, leaves chi at exactly 0 whatever the supply and the price. The debit
+    /// alone would leave ((supply * chi) % RAY) / supply behind, which is rarely 0 below 1bn srUSDS of supply
+    function testFuzzSettleTotalLossLeavesChiAtZero(uint256 supply, uint256 gain, uint256 excess) public {
+        supply = bound(supply, 1e18, 999_999_999e18);
+        gain   = bound(gain, 1, supply / 10);
+        excess = bound(excess, 0, supply);
+        _deposit(address(0x111), supply);
+        srusds.settle(int256(gain)); // chi is no longer a round number
+        uint256 totalAssets = srusds.totalAssets();
+
+        srusds.settle(-int256(totalAssets + excess));
+
+        assertEq(srusds.chi(), 0);
+        assertEq(srusds.totalAssets(), 0);
+        assertLe(susds.balanceOf(address(srusds)), 1); // Rounding dust of the gain
+    }
+
+    /// Known limitation: a loss that leaves only dust of the backing leaves chi tiny but not 0, and deposits still
+    /// convert, into share amounts ~1e26 times a normal one. Such a loss must not be booked: report a loss of at
+    /// least the whole backing instead
+    function testSettleNearTotalLossLeavesDustChi() public {
+        _deposit(address(0x111), 125_000_000e18);
+        srusds.settle(-int256(125_000_000e18 - 1)); // Everything but 1 wei
+
+        assertEq(srusds.chi(), 8);
+        assertEq(_deposit(address(0x222), 1e18), 1e18 * RAY / 8);
+    }
+
     function testSettleNothingOutstandingIsNoop() public {
         uint256 sinBefore = vat.sin(VOW);
         srusds.settle(10e18);

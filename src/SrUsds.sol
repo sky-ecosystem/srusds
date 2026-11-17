@@ -219,9 +219,9 @@ contract SrUsds is UUPSUpgradeable {
             usdsJoin.join(vow, usdsAmt);
 
             // Debit at least what was removed, rounded up (at most oldChi, as assets_ <= totalAssets_).
-            // A total loss leaves chi at 0, after which deposits revert, so settle with depositCapacity 0
-            uint256 deltaChi = _divup(assets_ * RAY, supply);
-            newChi = oldChi - deltaChi;
+            // A total loss leaves chi at exactly 0, dropping the fraction of a wei the shares were still worth,
+            // after which deposits revert, so settle with depositCapacity 0
+            newChi = assets_ == totalAssets_ ? 0 : oldChi - _divup(assets_ * RAY, supply);
         }
 
         chi = _toUint192(newChi);

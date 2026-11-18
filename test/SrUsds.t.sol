@@ -161,11 +161,15 @@ contract SrUsdsTest is TokenFuzzChecks {
         assertLe(srusds.totalAssets(), susds.balanceOf(address(srusds)));
     }
 
-    /// A loss is capped at the backing and leaves chi at 0: deposits revert, redeems pay nothing, and nothing
-    /// can be revalued again
+    /// A loss of the whole backing leaves chi at 0: deposits revert, redeems pay nothing, and nothing can be
+    /// revalued again. A loss cannot be larger than the backing
     function testSettleTotalLoss() public {
         _deposit(address(0x111), 100e18);
-        srusds.settle(-200e18);
+        vm.expectRevert("SrUsds/loss-exceeds-backing");
+        srusds.settle(-100e18 - 1);
+        vm.expectEmit();
+        emit Settle(-100e18, RAY, 0);
+        srusds.settle(-100e18);
 
         assertEq(srusds.chi(), 0);
         assertEq(susds.balanceOf(address(srusds)), 0);
@@ -178,7 +182,12 @@ contract SrUsdsTest is TokenFuzzChecks {
         vm.expectRevert(stdError.divisionError);
         srusds.deposit(1e18, address(this));
 
-        srusds.settle(50e18); // Nothing outstanding to revalue
+        // Nothing outstanding to revalue: neither a gain nor a loss can be booked, and chi stays at 0
+        vm.expectRevert("SrUsds/nothing-outstanding");
+        srusds.settle(50e18);
+        vm.expectRevert("SrUsds/loss-exceeds-backing");
+        srusds.settle(-1);
+        srusds.settle(0);
         assertEq(srusds.chi(), 0);
         assertEq(susds.balanceOf(address(srusds)), 0);
 
@@ -186,17 +195,20 @@ contract SrUsdsTest is TokenFuzzChecks {
         vm.prank(address(0x111)); assertEq(srusds.redeem(100e18, address(0x111), address(0x111)), 0);
     }
 
-    /// A loss of the whole backing, or more, leaves chi at exactly 0 whatever the supply and the price. The debit
-    /// alone would leave ((supply * chi) % RAY) / supply behind, which is rarely 0 below 1bn srUSDS of supply
+    /// A loss of the whole backing leaves chi at exactly 0 whatever the supply and the price, and anything above
+    /// it reverts. The debit alone would leave ((supply * chi) % RAY) / supply behind, which is rarely 0 below 1bn
+    /// srUSDS of supply
     function testFuzzSettleTotalLossLeavesChiAtZero(uint256 supply, uint256 gain, uint256 excess) public {
         supply = bound(supply, 1e18, 999_999_999e18);
         gain   = bound(gain, 1, supply / 10);
-        excess = bound(excess, 0, supply);
+        excess = bound(excess, 1, supply);
         _deposit(address(0x111), supply);
         srusds.settle(int256(gain)); // chi is no longer a round number
         uint256 totalAssets = srusds.totalAssets();
 
+        vm.expectRevert("SrUsds/loss-exceeds-backing");
         srusds.settle(-int256(totalAssets + excess));
+        srusds.settle(-int256(totalAssets));
 
         assertEq(srusds.chi(), 0);
         assertEq(srusds.totalAssets(), 0);
@@ -214,16 +226,31 @@ contract SrUsdsTest is TokenFuzzChecks {
         assertEq(_deposit(address(0x222), 1e18), 1e18 * RAY / 8);
     }
 
-    function testSettleNothingOutstandingIsNoop() public {
-        uint256 sinBefore = vat.sin(VOW);
+    function testSettleNothingOutstandingReverts() public {
+        vm.expectRevert("SrUsds/nothing-outstanding");
         srusds.settle(10e18);
+        vm.expectRevert("SrUsds/loss-exceeds-backing");
+        srusds.settle(-1);
         assertEq(srusds.chi(), RAY);
-        assertEq(susds.balanceOf(address(srusds)), 0);
-        assertEq(vat.sin(VOW), sinBefore);
+    }
+
+    /// A settlement of 0 moves nothing and still logs the price, with or without anything outstanding
+    function testSettleZero() public {
+        uint256 sinBefore = vat.sin(VOW);
+
+        vm.expectEmit();
+        emit Settle(0, RAY, RAY);
+        srusds.settle(0);
 
         _deposit(address(0x111), 100e18);
+        srusds.settle(10e18);
+        vm.expectEmit();
+        emit Settle(0, 1.1e27, 1.1e27);
         srusds.settle(0);
-        assertEq(srusds.chi(), RAY);
+
+        assertEq(srusds.chi(), 1.1e27);
+        assertEq(susds.balanceOf(address(srusds)), 110e18);
+        assertEq(vat.sin(VOW), sinBefore + 10e18 * RAY);
     }
 
     function testSettleAuth() public {

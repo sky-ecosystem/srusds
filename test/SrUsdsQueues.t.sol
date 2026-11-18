@@ -512,10 +512,14 @@ contract SrUsdsQueuesTest is DssTest {
         _queueRedeem(alice, shares);
         _queueDeposit(bob, 500_000e18);
 
+        // The loss has to be exactly the backing: anything above it reverts
+        int256 totalLoss = -int256(srusds.totalAssets());
         vm.warp(_nextDay() + 14 hours);
+        vm.expectRevert("SrUsds/loss-exceeds-backing");
+        queues.settle(totalLoss - 1, 0, type(uint256).max);
         vm.expectRevert(stdError.divisionError);
-        queues.settle(-2_000_000e18, type(uint256).max, type(uint256).max);
-        queues.settle(-2_000_000e18, 0, type(uint256).max);
+        queues.settle(totalLoss, type(uint256).max, type(uint256).max);
+        queues.settle(totalLoss, 0, type(uint256).max);
 
         assertEq(srusds.chi(), 0);
         assertEq(srusds.totalSupply(), 0);

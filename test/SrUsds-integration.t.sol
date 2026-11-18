@@ -128,8 +128,8 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
             lockTimeEnd:        16 hours,
             period:             1,
             startDay:           block.timestamp / 1 days,
-            maxMint:            100_000e18,
-            maxCut:             100_000e18,
+            maxMint:            0.05e18, // 5% of the backing per settlement
+            maxCut:             0.10e18, // 10% of the backing per settlement
             maxDepositCapacity: 100_000e18,
             maxRedeemCapacity:  100_000e18,
             buds:               buds
@@ -192,8 +192,9 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         assertEq(beam.wards(address(this)), 0);
         assertEq(address(beam.queues()), inst.queues);
         assertEq(beam.buds(bud), 1);
-        assertEq(beam.maxMint(), 100_000e18);
-        assertEq(beam.maxCut(), 100_000e18);
+        assertEq(address(beam.share()), inst.srUsds);
+        assertEq(beam.maxMint(), 0.05e18);
+        assertEq(beam.maxCut(), 0.10e18);
         assertEq(beam.maxDepositCapacity(), 100_000e18);
         assertEq(beam.maxRedeemCapacity(), 100_000e18);
         assertEq(beam.bad(), 0);
@@ -518,12 +519,17 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
     }
 
     function testBeamLimits() public {
+        // The gain and loss limits are proportions of the backing before the settlement
+        uint256 totalAssets = token.totalAssets();
+        uint256 mintLimit   = totalAssets * 0.05e18 / WAD;
+        uint256 cutLimit    = totalAssets * 0.10e18 / WAD;
+
         _warpToWindow();
         vm.startPrank(bud);
         vm.expectRevert("SrUsdsBeam/maxMint-exceed");
-        beam.settle(100_000e18 + 1, 0, 0);
+        beam.settle(int256(mintLimit) + 1, 0, 0);
         vm.expectRevert("SrUsdsBeam/maxCut-exceed");
-        beam.settle(-100_000e18 - 1, 0, 0);
+        beam.settle(-int256(cutLimit) - 1, 0, 0);
         vm.expectRevert("SrUsdsBeam/maxDepositCapacity-exceed");
         beam.settle(0, 100_000e18 + 1, 0);
         vm.expectRevert("SrUsdsBeam/maxRedeemCapacity-exceed");
@@ -537,6 +543,60 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
 
         vm.prank(bud); beam.settle(0, 0, 0);
         assertEq(queues.lastSettleDay(), block.timestamp / 1 days);
+    }
+
+    /// A gain or a loss of exactly the proportion passes, and each limit is taken from the backing at that moment
+    function testBeamLimitsFollowTheBacking() public {
+        uint256 totalAssets = token.totalAssets();
+        uint256 mintLimit   = totalAssets * 0.05e18 / WAD;
+
+        _warpToWindow();
+        vm.prank(bud); beam.settle(int256(mintLimit), 0, 0);
+        assertApproxEqAbs(token.totalAssets(), totalAssets + mintLimit, 1);
+
+        // The backing grew, and so did both limits
+        totalAssets = token.totalAssets();
+        uint256 cutLimit = totalAssets * 0.10e18 / WAD;
+        assertGt(totalAssets * 0.05e18 / WAD, mintLimit);
+
+        _warpToWindow();
+        vm.prank(bud); vm.expectRevert("SrUsdsBeam/maxCut-exceed");
+        beam.settle(-int256(cutLimit) - 1, 0, 0);
+        vm.prank(bud); beam.settle(-int256(cutLimit), 0, 0);
+        assertApproxEqAbs(token.totalAssets(), totalAssets - cutLimit, 1);
+    }
+
+    /// With nothing outstanding there is no backing to take a proportion of, so the facilitator can book neither a
+    /// gain nor a loss
+    function testBeamLimitsWithNothingOutstanding() public {
+        uint256 shares = token.balanceOf(address(0x222));
+        vm.prank(address(0x222)); token.transfer(address(this), shares);
+        token.redeem(shares, address(this), address(this));
+        assertEq(token.totalSupply(), 0);
+        assertEq(token.totalAssets(), 0);
+
+        _warpToWindow();
+        vm.startPrank(bud);
+        vm.expectRevert("SrUsdsBeam/maxMint-exceed");
+        beam.settle(1, 0, 0);
+        vm.expectRevert("SrUsdsBeam/maxCut-exceed");
+        beam.settle(-1, 0, 0);
+        beam.settle(0, 0, 0);
+        vm.stopPrank();
+    }
+
+    /// Both limits are proportions, so at most 100%: a value in sUSDS, as the limits used to be, is rejected
+    function testBeamFileLimits() public {
+        vm.startPrank(pauseProxy);
+        vm.expectRevert("SrUsdsBeam/invalid-maxMint-value");
+        beam.file("maxMint", WAD + 1);
+        vm.expectRevert("SrUsdsBeam/invalid-maxCut-value");
+        beam.file("maxCut", WAD + 1);
+        beam.file("maxMint", WAD);
+        beam.file("maxCut", WAD);
+        vm.stopPrank();
+        assertEq(beam.maxMint(), WAD);
+        assertEq(beam.maxCut(), WAD);
     }
 
     /// Governance can halt the Beam through the Mom without delay, and only governance lifts it

@@ -17,7 +17,12 @@
 pragma solidity ^0.8.21;
 
 interface QueuesLike {
+    function share() external view returns (address);
     function settle(int256 profit, uint256 depositCapacity, uint256 redeemCapacity) external;
+}
+
+interface ShareLike {
+    function totalAssets() external view returns (uint256);
 }
 
 contract SrUsdsBeam {
@@ -25,13 +30,17 @@ contract SrUsdsBeam {
     mapping(address => uint256) public wards;
     mapping(address => uint256) public buds;
     uint8   public bad;                // Circuit breaker flag
-    uint256 public maxMint;            // Max mint value [wad]
-    uint256 public maxCut;             // Max cut value [wad]
+    uint256 public maxMint;            // Max gain per settlement, as a proportion of the backing [wad, 1e18 = 100%]
+    uint256 public maxCut;             // Max loss per settlement, as a proportion of the backing [wad, 1e18 = 100%]
     uint256 public maxDepositCapacity; // Max deposit queue capacity [wad]
     uint256 public maxRedeemCapacity;  // Max redeem queue capacity [wad]
 
     // --- Immutables ---
     QueuesLike public immutable queues;
+    ShareLike  public immutable share;
+
+    // --- Constants ---
+    uint256 constant WAD = 10 ** 18;
 
     // --- Events ---
     event Rely(address indexed usr);
@@ -59,6 +68,7 @@ contract SrUsdsBeam {
 
     constructor(address _queues) {
         queues = QueuesLike(_queues);
+        share  = ShareLike(queues.share());
 
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
@@ -90,8 +100,10 @@ contract SrUsdsBeam {
             require(data == 0 || data == 1, "SrUsdsBeam/invalid-bad-value");
             bad = uint8(data);
         } else if (what == "maxMint") {
+            require(data <= WAD, "SrUsdsBeam/invalid-maxMint-value");
             maxMint = data;
         } else if (what == "maxCut") {
+            require(data <= WAD, "SrUsdsBeam/invalid-maxCut-value");
             maxCut = data;
         } else if (what == "maxDepositCapacity") {
             maxDepositCapacity = data;
@@ -102,6 +114,8 @@ contract SrUsdsBeam {
     }
 
     /// @notice Settle the queues within the facilitator's limits
+    /// @dev The gain and loss limits are proportions of the backing before this settlement, so of what is outstanding
+    ///      before any queued deposit or redeem is converted. With nothing outstanding, only a profit of 0 passes
     /// @param profit Amount to add (positive) or remove (negative) from vault backing
     /// @param depositCapacity Maximum underlying to convert via deposit queue
     /// @param redeemCapacity Maximum shares to convert via redeem queue
@@ -110,8 +124,9 @@ contract SrUsdsBeam {
         uint256 depositCapacity,
         uint256 redeemCapacity
     ) external toll good {
-        require(profit <= 0 || uint256(profit) <= maxMint, "SrUsdsBeam/maxMint-exceed");
-        require(profit >= 0 || uint256(-profit) <= maxCut, "SrUsdsBeam/maxCut-exceed");
+        uint256 totalAssets = share.totalAssets();
+        require(profit <= 0 || uint256(profit) <= totalAssets * maxMint / WAD, "SrUsdsBeam/maxMint-exceed");
+        require(profit >= 0 || uint256(-profit) <= totalAssets * maxCut / WAD, "SrUsdsBeam/maxCut-exceed");
         require(depositCapacity <= maxDepositCapacity, "SrUsdsBeam/maxDepositCapacity-exceed");
         require(redeemCapacity <= maxRedeemCapacity, "SrUsdsBeam/maxRedeemCapacity-exceed");
 

@@ -115,7 +115,9 @@ contract SrUsdsBeam {
 
     /// @notice Settle the queues within the facilitator's limits
     /// @dev The gain and loss limits are proportions of the backing before this settlement, so of what is outstanding
-    ///      before any queued deposit or redeem is converted. With nothing outstanding, only a profit of 0 passes
+    ///      before any queued deposit or redeem is converted. With nothing outstanding, only a profit of 0 passes.
+    ///      A loss cannot come with deposit capacity: deposits enter at the earliest in the following settlement,
+    ///      so nobody is converted at a price that was cut in the same call, before anyone could react to it
     /// @param profit Amount to add (positive) or remove (negative) from vault backing
     /// @param depositCapacity Maximum underlying to convert via deposit queue
     /// @param redeemCapacity Maximum shares to convert via redeem queue
@@ -127,6 +129,7 @@ contract SrUsdsBeam {
         uint256 totalAssets = share.totalAssets();
         require(profit <= 0 || uint256(profit) <= totalAssets * maxMint / WAD, "SrUsdsBeam/maxMint-exceed");
         require(profit >= 0 || uint256(-profit) <= totalAssets * maxCut / WAD, "SrUsdsBeam/maxCut-exceed");
+        require(profit >= 0 || depositCapacity == 0, "SrUsdsBeam/cut-with-deposits");
         require(depositCapacity <= maxDepositCapacity, "SrUsdsBeam/maxDepositCapacity-exceed");
         require(redeemCapacity <= maxRedeemCapacity, "SrUsdsBeam/maxRedeemCapacity-exceed");
 

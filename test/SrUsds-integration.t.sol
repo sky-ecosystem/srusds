@@ -566,6 +566,30 @@ contract SrUsdsIntegrationTest is TokenFuzzChecks {
         assertApproxEqAbs(token.totalAssets(), totalAssets - cutLimit, 1);
     }
 
+    /// A loss cannot be booked together with deposit capacity: whoever is queued enters at the earliest in the
+    /// following settlement, once the new price has been public for a whole period. Redeems convert as usual
+    function testBeamCutConvertsNoDeposits() public {
+        deal(address(susds), alice, 10e18);
+        vm.startPrank(alice);
+        susds.approve(address(queues), 10e18);
+        queues.queueDeposit(10e18, alice, alice, 0);
+        vm.stopPrank();
+
+        _warpToWindow();
+        vm.startPrank(bud);
+        vm.expectRevert("SrUsdsBeam/cut-with-deposits");
+        beam.settle(-1e18, 1, 0);
+        beam.settle(-1e18, 0, 100_000e18);
+        vm.stopPrank();
+        assertEq(queues.pendingDeposit(alice), 10e18);
+        assertEq(queues.claimableDeposit(alice), 0);
+
+        _warpToWindow();
+        vm.prank(bud); beam.settle(0, 10e18, 0);
+        assertEq(queues.pendingDeposit(alice), 0);
+        assertEq(queues.claimableDeposit(alice), 10e18 * RAY / token.chi());
+    }
+
     /// With nothing outstanding there is no backing to take a proportion of, so the facilitator can book neither a
     /// gain nor a loss
     function testBeamLimitsWithNothingOutstanding() public {

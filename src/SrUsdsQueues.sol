@@ -275,7 +275,7 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     function _queue(Queue storage queue, TokenLike token, uint256 amount, address controller, address owner) internal {
         _checkOperator(owner);
-        require(controller != address(0), "SrUsdsQueues/controller-zero-address");
+        require(controller != address(0) && controller != address(this), "SrUsdsQueues/invalid-controller");
         require(amount > 0, "SrUsdsQueues/zero-amount");
         require(!_locked(), "SrUsdsQueues/queue-locked");
         require(!_closed(queue), "SrUsdsQueues/queue-closed");
@@ -300,7 +300,7 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     function _cancel(Queue storage queue, TokenLike token, address receiver, address controller) internal returns (uint256 amount) {
         _checkOperator(controller);
-        require(receiver != address(0), "SrUsdsQueues/receiver-zero-address");
+        require(receiver != address(0) && receiver != address(this), "SrUsdsQueues/invalid-receiver");
         require(!_locked(), "SrUsdsQueues/queue-locked");
         Position storage pos = queue.positions[controller];
 
@@ -326,7 +326,7 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     function _claim(Queue storage queue, TokenLike token, uint256 amount, address receiver, address controller) internal returns (uint256 claimed) {
         _checkOperator(controller);
-        require(receiver != address(0), "SrUsdsQueues/receiver-zero-address");
+        require(receiver != address(0) && receiver != address(this), "SrUsdsQueues/invalid-receiver");
         Position storage pos = queue.positions[controller];
 
         _sync(queue, pos);

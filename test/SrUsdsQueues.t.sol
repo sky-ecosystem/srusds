@@ -361,8 +361,10 @@ contract SrUsdsQueuesTest is DssTest {
 
         vm.prank(alice); vm.expectRevert("SrUsdsQueues/zero-amount");
         queues.queueDeposit(0, alice, alice, 0);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/controller-zero-address");
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/invalid-controller");
         queues.queueDeposit(100e18, address(0), alice, 0);
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/invalid-controller"); // The queues could never cancel or claim it
+        queues.queueDeposit(100e18, address(queues), alice, 0);
         vm.prank(bob); vm.expectRevert("SrUsdsQueues/not-operator"); // Not alice's operator
         queues.queueDeposit(100e18, bob, alice, 0);
         vm.prank(bob); vm.expectRevert("SrUsdsQueues/not-operator");
@@ -625,8 +627,10 @@ contract SrUsdsQueuesTest is DssTest {
 
     function testCancelReverts() public {
         _queueDeposit(alice, 100e18);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/receiver-zero-address");
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/invalid-receiver");
         queues.cancelDeposit(address(0), alice);
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/invalid-receiver"); // The sUSDS would stay in the queues, owed to nobody
+        queues.cancelDeposit(address(queues), alice);
         vm.prank(bob); vm.expectRevert("SrUsdsQueues/not-operator");
         queues.cancelDeposit(bob, alice);
     }
@@ -671,8 +675,10 @@ contract SrUsdsQueuesTest is DssTest {
     function testClaimReverts() public {
         _queueDeposit(alice, 100e18);
         _settleDeposit(40e18);
-        vm.prank(alice); vm.expectRevert("SrUsdsQueues/receiver-zero-address");
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/invalid-receiver");
         queues.claimDeposit(1, address(0), alice);
+        vm.prank(alice); vm.expectRevert("SrUsdsQueues/invalid-receiver"); // The srUSDS would stay in the queues, owed to nobody
+        queues.claimDeposit(1, address(queues), alice);
         vm.prank(bob); vm.expectRevert("SrUsdsQueues/not-operator");
         queues.claimDeposit(1, bob, alice);
     }

@@ -799,6 +799,32 @@ contract SrUsdsQueuesTest is DssTest {
         assertEq(queues.claimableDeposit(carol), 0);
     }
 
+    /// Edge case: a cancel removes all its units but only its share of the pending underlying rounded down, so a
+    /// queue past the limit by less than that rounding can reopen without a conversion. Here a single wei is
+    /// left pending and Alice's share of it rounds down to 0, so her cancel returns nothing and leaves the
+    /// queue at 1:1
+    function testClosedQueueReopensThroughCancels() public {
+        _queueDeposit(alice, 1_000_000e18);
+        _queueDeposit(carol, 1);
+        assertEq(_settleDeposit(1_000_000e18), 1_000_000e18);
+        assertTrue(_depositClosed());
+        _queueDepositReverts(bob, 100e18, "SrUsdsQueues/queue-closed");
+
+        vm.prank(alice); assertEq(queues.cancelDeposit(alice, alice), 0);
+        assertFalse(_depositClosed());
+        assertEq(_depositRatio(), 1);
+        assertEq(_depositGen(), 0); // Still the same generation: no conversion drained it
+        assertApproxEqAbs(queues.claimableDeposit(alice), 1_000_000e18, 1); // What converted is still hers
+
+        // Once every position has cancelled the queue is empty, and the next request starts at 1:1
+        vm.prank(carol); assertEq(queues.cancelDeposit(carol, carol), 1);
+        _checkInvariants();
+        _queueDeposit(bob, 100e18);
+        (, uint256 bobUnits,,) = _depositPosition(bob);
+        assertEq(bobUnits, 100e18);
+        assertEq(queues.pendingDeposit(bob), 100e18);
+    }
+
     /// The limit can be passed on purpose: a request sized so that the queue exceeds the capacity by a sliver
     /// leaves the ratio just under the limit, and a large request before the next settlement then pushes it
     /// past it with that request pending. The queue stays closed, and every capacity goes to the requests

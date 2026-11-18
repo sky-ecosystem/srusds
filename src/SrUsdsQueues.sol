@@ -74,7 +74,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
 
     // --- Storage Variables ---
 
-    // Upgradeable: only append new variables at the end, never reorder, remove or retype existing ones (incl. Queue fields)
+    // Upgradeable: only append new variables at the end, never reorder, remove or retype existing ones.
+    // Queue is stored inline, 5 slots for each of depositQueue and redeemQueue, so it can never get a new field:
+    // one more would shift redeemQueue and every variable after it. Position is only reached through a mapping,
+    // so fields can be appended to it
     mapping(address usr => uint256 allowed) public wards;
     // Settlement schedule, packed into one slot as it is read on every request and cancellation
     uint32  public lockTimeBgn;      // Time in the day when the settlement window opens  [seconds, e.g. 13 hours == 13:00 UTC]
@@ -195,7 +198,10 @@ contract SrUsdsQueues is UUPSUpgradeable {
     }
 
     /// @dev Past the limit a joiner would get too many units per unit of underlying for the accounting to stay
-    ///      precise, so the generation is closed to new requests until a conversion drains it
+    ///      precise, so the generation is closed to new requests until a conversion drains it.
+    ///      Edge case: a cancel removes all its units but only its share of the pending underlying rounded down, so
+    ///      it can lower the ratio slightly. A queue past the limit by less than that rounding (under a wei of
+    ///      underlying per cancel) can then reopen without a conversion
     function _closed(Queue storage queue) internal view returns (bool) {
         return queue.totalUnits > queue.pendingUnderlying * MAX_UNIT_RATIO;
     }

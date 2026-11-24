@@ -12,6 +12,8 @@ jobs:
         lcts:
           - srusds
           - queues
+          - beam
+          - mom
 
     steps:
       - name: Checkout
